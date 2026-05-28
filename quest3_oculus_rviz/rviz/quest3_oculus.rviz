@@ -1,0 +1,77 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+    - Alpha: 0.55
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /quest3_franka/robot_description
+      Enabled: true
+      Name: Franka Panda Model
+      TF Prefix: ""
+      Update Interval: 0
+      Value: false
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frames:
+        All Enabled: false
+        Frame Timeout: 15
+        Frames:
+          franka_sim_tcp:
+            Value: true
+          quest3_right_controller:
+            Value: true
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: false
+      Name: Quest3 Raw Controller Markers
+      Topic:
+        Value: /quest3/controller_markers
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: false
+      Name: Franka Sim TCP
+      Topic:
+        Value: /franka_sim/tcp_markers
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+Views:
+  Current:
+    Class: rviz_default_plugins/Orbit
+    Distance: 2.5
+    Focal Point:
+      X: 0.35
+      Y: 0
+      Z: 0.9
+    Name: Current View
+    Pitch: 0.45
+    Target Frame: world
+    Yaw: 2.35
+  Saved: ~

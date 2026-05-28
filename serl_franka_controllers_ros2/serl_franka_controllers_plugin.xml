@@ -1,0 +1,26 @@
+<library path="serl_franka_controllers_ros2_controllers">
+  <class
+    name="serl_franka_controllers_ros2/CartesianImpedanceController"
+    type="serl_franka_controllers::CartesianImpedanceController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Cartesian impedance controller for Franka robots ported to ROS 2.
+    </description>
+  </class>
+  <class
+    name="serl_franka_controllers_ros2/JointPositionController"
+    type="serl_franka_controllers::JointPositionController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Joint position interpolation controller for Franka robots ported to ROS 2.
+    </description>
+  </class>
+  <class
+    name="serl_franka_controllers_ros2/CartesianPoseCommandController"
+    type="serl_franka_controllers::CartesianPoseCommandController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Direct Cartesian pose command controller for Franka robots using the cartesian_pose_command interface.
+    </description>
+  </class>
+</library>

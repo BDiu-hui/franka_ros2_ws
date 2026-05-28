@@ -1,0 +1,10 @@
+<library path="serl_franka_controllers_ros2_rviz_panel">
+  <class
+    name="serl_franka_controllers_ros2/ImpedanceTuningPanel"
+    type="serl_franka_controllers_ros2::ImpedanceTuningPanel"
+    base_class_type="rviz_common::Panel">
+    <description>
+      RViz panel with sliders for live tuning of serl_franka_controllers_ros2 Cartesian impedance parameters.
+    </description>
+  </class>
+</library>
