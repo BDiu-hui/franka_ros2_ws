@@ -22,6 +22,12 @@ class VelocityTeleopMotionMode:
         current_controller_rotation = node.current_controller_rotation()
 
         delta_raw = current_controller_position - node.previous_controller_position
+        controller_delta_rotation = (
+            node.previous_controller_rotation.T @ current_controller_rotation
+        )
+        controller_delta_rotvec = node.clamped_rotation_vector(controller_delta_rotation)
+        node.last_controller_frame_delta_position_raw = delta_raw
+        node.last_controller_frame_delta_rotvec = controller_delta_rotvec
         delta_control = node.previous_controller_rotation.T @ delta_raw
         signed_delta_control = delta_control * node.translation_axis_sign
         deadbanded_delta_control = node.apply_vector_deadband(
@@ -46,10 +52,6 @@ class VelocityTeleopMotionMode:
             tcp_base_position + tcp_base_rotation @ tcp_delta_body
         )
 
-        controller_delta_rotation = (
-            node.previous_controller_rotation.T @ current_controller_rotation
-        )
-        controller_delta_rotvec = node.clamped_rotation_vector(controller_delta_rotation)
         rx, ry, rz = controller_delta_rotvec
         tcp_delta_rotvec = np.array(
             [
@@ -96,7 +98,7 @@ class PositionTeleopMotionMode:
     name = "position"
 
     def update(self, node, now: float, dt: float) -> None:
-        del now, dt
+        del dt
         if (
             node.anchor_controller_position is None
             or node.anchor_controller_rotation is None
@@ -108,6 +110,64 @@ class PositionTeleopMotionMode:
 
         current_controller_position = node.current_controller_position()
         current_controller_rotation = node.current_controller_rotation()
+
+        if node.previous_controller_position is None:
+            frame_delta_position = np.zeros(3, dtype=float)
+        else:
+            frame_delta_position = current_controller_position - node.previous_controller_position
+        if node.previous_controller_rotation is None:
+            frame_delta_rotvec = np.zeros(3, dtype=float)
+        else:
+            frame_delta_rotation = node.previous_controller_rotation.T @ current_controller_rotation
+            frame_delta_rotvec = node.rotation_vector_from_matrix(frame_delta_rotation)
+        node.last_controller_frame_delta_position_raw = frame_delta_position
+        node.last_controller_frame_delta_rotvec = frame_delta_rotvec
+
+        if node.position_controller_is_stationary(
+            frame_delta_position,
+            frame_delta_rotvec,
+            now,
+        ):
+            if not node.position_paused_for_stationary:
+                node.reanchor_position_target(
+                    current_controller_position,
+                    current_controller_rotation,
+                    now,
+                )
+                node.position_paused_for_stationary = True
+            node.update_position_stationary_hold_state(
+                current_controller_position,
+                current_controller_rotation,
+                now,
+            )
+            return
+
+        if node.position_paused_for_stationary:
+            if not node.position_controller_resume_requested(
+                frame_delta_position,
+                frame_delta_rotvec,
+            ):
+                node.update_position_stationary_hold_state(
+                    current_controller_position,
+                    current_controller_rotation,
+                    now,
+                )
+                return
+
+            node.position_paused_for_stationary = False
+            node.position_stationary_since = None
+            node.position_stationary_active = False
+            node.reanchor_position_target(
+                current_controller_position,
+                current_controller_rotation,
+                now,
+            )
+            node.update_position_stationary_hold_state(
+                current_controller_position,
+                current_controller_rotation,
+                now,
+            )
+            return
 
         delta_raw = current_controller_position - node.anchor_controller_position
         delta_control = node.anchor_controller_rotation.T @ delta_raw

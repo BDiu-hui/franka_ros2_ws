@@ -242,6 +242,7 @@ class FrankyCartesianPoseNode(Node):
         self.declare_parameter("gripper_epsilon_inner_m", 0.005)
         self.declare_parameter("gripper_epsilon_outer_m", 0.005)
         self.declare_parameter("relative_dynamics_factor", 0.05)
+        self.declare_parameter("stop_relative_dynamics_factor", -1.0)
         self.declare_parameter("automatic_error_recovery", True)
         self.declare_parameter("error_recovery_cooldown_sec", 1.0)
         self.declare_parameter("post_error_recovery_hold_sec", 0.6)
@@ -301,6 +302,12 @@ class FrankyCartesianPoseNode(Node):
         self.gripper_epsilon_inner = float(self.get_parameter("gripper_epsilon_inner_m").value)
         self.gripper_epsilon_outer = float(self.get_parameter("gripper_epsilon_outer_m").value)
         self.relative_dynamics_factor = float(self.get_parameter("relative_dynamics_factor").value)
+        configured_stop_dynamics = float(self.get_parameter("stop_relative_dynamics_factor").value)
+        self.stop_relative_dynamics_factor = (
+            self.relative_dynamics_factor
+            if configured_stop_dynamics < 0.0
+            else configured_stop_dynamics
+        )
         self.automatic_error_recovery = bool(self.get_parameter("automatic_error_recovery").value)
         self.error_recovery_cooldown_sec = float(self.get_parameter("error_recovery_cooldown_sec").value)
         self.post_error_recovery_hold_sec = max(
@@ -778,7 +785,7 @@ class FrankyCartesianPoseNode(Node):
             if self.robot is None:
                 self.motion_active = False
                 return
-            motion = self.franky.CartesianStopMotion(self.relative_dynamics_factor)
+            motion = self.franky.CartesianStopMotion(self.stop_relative_dynamics_factor)
             self.robot.move(motion, asynchronous=True)
 
     def _send_cartesian_velocity_stop(self) -> None:
@@ -786,7 +793,7 @@ class FrankyCartesianPoseNode(Node):
             if self.robot is None:
                 self.motion_active = False
                 return
-            motion = self.franky.CartesianVelocityStopMotion(self.relative_dynamics_factor)
+            motion = self.franky.CartesianVelocityStopMotion(self.stop_relative_dynamics_factor)
             self.robot.move(motion, asynchronous=True)
 
     def _send_stop_motion(self) -> None:
@@ -988,6 +995,7 @@ class FrankyCartesianPoseNode(Node):
                 "command_linear_velocity_mps": self.command_linear_velocity.tolist(),
                 "command_angular_velocity_radps": self.command_angular_velocity.tolist(),
                 "relative_dynamics_factor": self.relative_dynamics_factor,
+                "stop_relative_dynamics_factor": self.stop_relative_dynamics_factor,
                 "automatic_error_recovery": self.automatic_error_recovery,
                 "error_recovery_cooldown_sec": self.error_recovery_cooldown_sec,
                 "post_error_recovery_hold_sec": self.post_error_recovery_hold_sec,

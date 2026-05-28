@@ -57,6 +57,12 @@ class RightHandTeleopSimNode(Node):
         self.declare_parameter("max_tcp_delta_rotvec_rad", 0.035)
         self.declare_parameter("position_max_tcp_offset_m", 0.35)
         self.declare_parameter("position_max_tcp_rotvec_rad", 0.50)
+        self.declare_parameter("position_reanchor_when_stationary", False)
+        self.declare_parameter("position_stationary_translation_m", 0.0010)
+        self.declare_parameter("position_stationary_rotation_rad", 0.0030)
+        self.declare_parameter("position_stationary_hold_sec", 0.12)
+        self.declare_parameter("position_resume_translation_m", 0.0030)
+        self.declare_parameter("position_resume_rotation_rad", 0.0200)
         self.declare_parameter("rotation_scale", 1.0)
         self.declare_parameter("target_lead_time_sec", 0.25)
         self.declare_parameter("max_controller_angle_rad", 0.9)
@@ -138,6 +144,29 @@ class RightHandTeleopSimNode(Node):
             float(self.get_parameter("position_max_tcp_rotvec_rad").value),
             0.0,
         )
+        self.position_reanchor_when_stationary = bool(
+            self.get_parameter("position_reanchor_when_stationary").value
+        )
+        self.position_stationary_translation = max(
+            float(self.get_parameter("position_stationary_translation_m").value),
+            0.0,
+        )
+        self.position_stationary_rotation = max(
+            float(self.get_parameter("position_stationary_rotation_rad").value),
+            0.0,
+        )
+        self.position_stationary_hold = max(
+            float(self.get_parameter("position_stationary_hold_sec").value),
+            0.0,
+        )
+        self.position_resume_translation = max(
+            float(self.get_parameter("position_resume_translation_m").value),
+            self.position_stationary_translation,
+        )
+        self.position_resume_rotation = max(
+            float(self.get_parameter("position_resume_rotation_rad").value),
+            self.position_stationary_rotation,
+        )
         self.rotation_scale = float(self.get_parameter("rotation_scale").value)
         self.target_lead_time = float(self.get_parameter("target_lead_time_sec").value)
         self.max_controller_angle = float(self.get_parameter("max_controller_angle_rad").value)
@@ -194,6 +223,8 @@ class RightHandTeleopSimNode(Node):
         self.anchor_tcp_base_source = "internal_anchor"
         self.previous_controller_position: np.ndarray | None = None
         self.previous_controller_rotation: np.ndarray | None = None
+        self.last_controller_frame_delta_position_raw = np.zeros(3, dtype=float)
+        self.last_controller_frame_delta_rotvec = np.zeros(3, dtype=float)
         self.last_controller_delta_position_raw = np.zeros(3, dtype=float)
         self.last_controller_delta_position_control = np.zeros(3, dtype=float)
         self.last_controller_delta_rotvec = np.zeros(3, dtype=float)
@@ -203,6 +234,10 @@ class RightHandTeleopSimNode(Node):
         self.last_tcp_delta_rotvec_unfiltered = np.zeros(3, dtype=float)
         self.filtered_tcp_delta_body = np.zeros(3, dtype=float)
         self.filtered_tcp_delta_rotvec = np.zeros(3, dtype=float)
+        self.position_stationary_since: float | None = None
+        self.position_stationary_active = False
+        self.position_paused_for_stationary = False
+        self.position_stationary_reanchor_count = 0
         self.last_update_time = time.monotonic()
 
         self.pose_sub = self.create_subscription(
@@ -313,28 +348,34 @@ class RightHandTeleopSimNode(Node):
         self.last_update_dt_sec = dt
 
         stamp = self.get_clock().now().to_msg()
-        enabled = self.is_trigger_pressed() and self.latest_pose is not None
+        trigger_enabled = self.is_trigger_pressed() and self.latest_pose is not None
         previous_tcp_position = self.tcp_position.copy()
         previous_tcp_rotation = self.tcp_rotation.copy()
 
-        if enabled and not self.prev_enabled:
+        if trigger_enabled and not self.prev_enabled:
             self.capture_motion_anchor()
             self.get_logger().info(
                 f"{self.hand_label} trigger pressed: {self.teleop_motion_mode} tracking started."
             )
 
-        if not enabled:
+        if not trigger_enabled:
             self.clear_motion_anchor()
             if self.should_sync_external_tcp():
                 self.sync_tcp_from_pose(self.latest_external_tcp_pose)
 
-        if enabled:
+        if trigger_enabled:
             self.update_tcp_from_controller_pose(now, dt)
 
-        twist = self.compute_twist_from_tcp_delta(previous_tcp_position, previous_tcp_rotation, dt, enabled)
+        motion_enabled = trigger_enabled and not self.position_paused_for_stationary
+        twist = self.compute_twist_from_tcp_delta(
+            previous_tcp_position,
+            previous_tcp_rotation,
+            dt,
+            motion_enabled,
+        )
 
-        self.prev_enabled = enabled
-        self.publish_outputs(twist, enabled, stamp)
+        self.prev_enabled = trigger_enabled
+        self.publish_outputs(twist, motion_enabled, stamp)
 
     def capture_motion_anchor(self) -> None:
         mapped_controller_rotation = self.current_mapped_controller_rotation()
@@ -368,6 +409,110 @@ class RightHandTeleopSimNode(Node):
         self.reset_frame_deltas()
 
     def reset_frame_deltas(self) -> None:
+        self.last_controller_frame_delta_position_raw = np.zeros(3, dtype=float)
+        self.last_controller_frame_delta_rotvec = np.zeros(3, dtype=float)
+        self.last_controller_delta_position_raw = np.zeros(3, dtype=float)
+        self.last_controller_delta_position_control = np.zeros(3, dtype=float)
+        self.last_controller_delta_rotvec = np.zeros(3, dtype=float)
+        self.last_tcp_delta_body = np.zeros(3, dtype=float)
+        self.last_tcp_delta_body_unfiltered = np.zeros(3, dtype=float)
+        self.last_tcp_delta_rotvec = np.zeros(3, dtype=float)
+        self.last_tcp_delta_rotvec_unfiltered = np.zeros(3, dtype=float)
+        self.filtered_tcp_delta_body = np.zeros(3, dtype=float)
+        self.filtered_tcp_delta_rotvec = np.zeros(3, dtype=float)
+        self.position_stationary_since = None
+        self.position_stationary_active = False
+        self.position_paused_for_stationary = False
+        self.last_target_lead_scale = 1.0
+        self.last_update_dt_sec = 0.0
+
+    def position_controller_is_stationary(
+        self,
+        frame_delta_position: np.ndarray,
+        frame_delta_rotvec: np.ndarray,
+        now: float,
+    ) -> bool:
+        if not self.position_reanchor_when_stationary or self.teleop_motion_mode != "position":
+            return False
+
+        translation_stationary = (
+            float(np.linalg.norm(frame_delta_position)) <= self.position_stationary_translation
+        )
+        rotation_stationary = (
+            float(np.linalg.norm(frame_delta_rotvec)) <= self.position_stationary_rotation
+        )
+        if not (translation_stationary and rotation_stationary):
+            self.position_stationary_since = None
+            self.position_stationary_active = False
+            return False
+
+        if self.position_stationary_since is None:
+            self.position_stationary_since = now
+            self.position_stationary_active = False
+            return False
+
+        self.position_stationary_active = (
+            now - self.position_stationary_since >= self.position_stationary_hold
+        )
+        return self.position_stationary_active
+
+    def position_controller_resume_requested(
+        self,
+        frame_delta_position: np.ndarray,
+        frame_delta_rotvec: np.ndarray,
+    ) -> bool:
+        translation_moved = (
+            float(np.linalg.norm(frame_delta_position)) >= self.position_resume_translation
+        )
+        rotation_moved = (
+            float(np.linalg.norm(frame_delta_rotvec)) >= self.position_resume_rotation
+        )
+        return translation_moved or rotation_moved
+
+    def reanchor_position_target(
+        self,
+        controller_position: np.ndarray,
+        controller_rotation: np.ndarray,
+        now: float,
+    ) -> None:
+        if self.latest_external_tcp_pose is not None and self.external_tcp_pose_is_fresh(now):
+            self.tcp_position, self.tcp_rotation = self.tcp_state_from_pose(self.latest_external_tcp_pose)
+            self.anchor_tcp_base_source = "external_stationary_reanchor"
+        else:
+            self.anchor_tcp_base_source = "internal_stationary_reanchor"
+
+        self.anchor_controller_position = controller_position.copy()
+        self.anchor_controller_rotation = controller_rotation.copy()
+        self.anchor_tcp_position = self.tcp_position.copy()
+        self.anchor_tcp_rotation = self.tcp_rotation.copy()
+        self.previous_controller_position = controller_position.copy()
+        self.previous_controller_rotation = controller_rotation.copy()
+        self.filtered_tcp_delta_body = np.zeros(3, dtype=float)
+        self.filtered_tcp_delta_rotvec = np.zeros(3, dtype=float)
+        self.position_stationary_reanchor_count += 1
+
+    def update_position_stationary_hold_state(
+        self,
+        controller_position: np.ndarray,
+        controller_rotation: np.ndarray,
+        now: float,
+    ) -> None:
+        if self.latest_external_tcp_pose is not None and self.external_tcp_pose_is_fresh(now):
+            self.tcp_position, self.tcp_rotation = self.tcp_state_from_pose(self.latest_external_tcp_pose)
+            self.anchor_tcp_position = self.tcp_position.copy()
+            self.anchor_tcp_rotation = self.tcp_rotation.copy()
+            self.anchor_tcp_base_source = "external_stationary_hold"
+            self.last_tcp_base_source = "external_stationary_hold"
+        else:
+            self.anchor_tcp_position = self.tcp_position.copy()
+            self.anchor_tcp_rotation = self.tcp_rotation.copy()
+            self.anchor_tcp_base_source = "internal_stationary_hold"
+            self.last_tcp_base_source = "internal_stationary_hold"
+
+        self.anchor_controller_position = controller_position.copy()
+        self.anchor_controller_rotation = controller_rotation.copy()
+        self.previous_controller_position = controller_position.copy()
+        self.previous_controller_rotation = controller_rotation.copy()
         self.last_controller_delta_position_raw = np.zeros(3, dtype=float)
         self.last_controller_delta_position_control = np.zeros(3, dtype=float)
         self.last_controller_delta_rotvec = np.zeros(3, dtype=float)
@@ -378,7 +523,6 @@ class RightHandTeleopSimNode(Node):
         self.filtered_tcp_delta_body = np.zeros(3, dtype=float)
         self.filtered_tcp_delta_rotvec = np.zeros(3, dtype=float)
         self.last_target_lead_scale = 1.0
-        self.last_update_dt_sec = 0.0
 
     def should_sync_external_tcp(self) -> bool:
         return (
@@ -491,6 +635,7 @@ class RightHandTeleopSimNode(Node):
             "teleop_motion_mode": self.teleop_motion_mode,
             "hand": self.hand_label,
             "enabled": enabled,
+            "trigger_pressed": self.is_trigger_pressed(),
             "input_ready": self.latest_pose is not None,
             "trigger": self.trigger_value(),
             "anchor_active": self.anchor_controller_position is not None,
@@ -509,12 +654,33 @@ class RightHandTeleopSimNode(Node):
             "max_tcp_delta_rotvec_rad": self.max_tcp_delta_rotvec,
             "position_max_tcp_offset_m": self.position_max_tcp_offset,
             "position_max_tcp_rotvec_rad": self.position_max_tcp_rotvec,
+            "position_reanchor_when_stationary": self.position_reanchor_when_stationary,
+            "position_stationary_translation_m": self.position_stationary_translation,
+            "position_stationary_rotation_rad": self.position_stationary_rotation,
+            "position_stationary_hold_sec": self.position_stationary_hold,
+            "position_resume_translation_m": self.position_resume_translation,
+            "position_resume_rotation_rad": self.position_resume_rotation,
+            "position_stationary_active": self.position_stationary_active,
+            "position_paused_for_stationary": self.position_paused_for_stationary,
+            "position_resume_requested": self.position_controller_resume_requested(
+                self.last_controller_frame_delta_position_raw,
+                self.last_controller_frame_delta_rotvec,
+            ),
+            "position_stationary_reanchor_count": self.position_stationary_reanchor_count,
             "gripper_buttons_enabled": self.gripper_buttons_enabled,
             "gripper_command_topic": self.gripper_command_topic,
             "gripper_open_button": self.gripper_open_button_name,
             "gripper_close_button": self.gripper_close_button_name,
             "last_gripper_button_command": self.last_gripper_button_command,
             "controller_frame_aligned_to_tcp": self.controller_frame_alignment_active,
+            "controller_frame_delta_position_raw": self.last_controller_frame_delta_position_raw.tolist(),
+            "controller_frame_delta_position_raw_norm_m": float(
+                np.linalg.norm(self.last_controller_frame_delta_position_raw)
+            ),
+            "controller_frame_delta_rotvec": self.last_controller_frame_delta_rotvec.tolist(),
+            "controller_frame_delta_rotvec_norm_rad": float(
+                np.linalg.norm(self.last_controller_frame_delta_rotvec)
+            ),
             "controller_delta_position_raw": list(self.controller_delta_position_raw()),
             "controller_delta_position_control": list(self.controller_delta_position_control()),
             "controller_delta_rotvec": list(self.controller_delta_rotvec()),
@@ -592,6 +758,15 @@ class RightHandTeleopSimNode(Node):
 
         mapped_controller_quat = self.mapped_controller_quaternion()
         aligned_controller_quat = self.aligned_controller_quaternion()
+        robot_tcp_pose = self.latest_external_tcp_pose
+        robot_tcp_pose_age_sec = None
+        robot_tcp_pose_fresh = False
+        target_minus_robot = None
+        if robot_tcp_pose is not None:
+            robot_tcp_pose_age_sec = now - self.latest_external_tcp_pose_time
+            robot_tcp_pose_fresh = self.external_tcp_pose_is_fresh(now)
+            target_minus_robot = self.pose_delta_to_dict(robot_tcp_pose, tcp_pose)
+
         record = {
             "time_sec": self.get_clock().now().nanoseconds * 1e-9,
             "hand": self.hand_label,
@@ -601,6 +776,11 @@ class RightHandTeleopSimNode(Node):
             "controller_orientation_mapped_xyzw": mapped_controller_quat,
             "controller_orientation_aligned_xyzw": aligned_controller_quat,
             "franka_sim_tcp_pose": self.pose_to_dict(tcp_pose),
+            "robot_tcp_pose": self.pose_to_dict(robot_tcp_pose) if robot_tcp_pose is not None else None,
+            "robot_tcp_pose_topic": self.external_tcp_pose_topic,
+            "robot_tcp_pose_age_sec": robot_tcp_pose_age_sec,
+            "robot_tcp_pose_fresh": robot_tcp_pose_fresh,
+            "target_minus_robot": target_minus_robot,
             "twist": {
                 "frame_id": twist.header.frame_id,
                 "linear": {
@@ -657,6 +837,58 @@ class RightHandTeleopSimNode(Node):
                 "z": msg.pose.orientation.z,
                 "w": msg.pose.orientation.w,
             },
+        }
+
+    def pose_delta_to_dict(self, source_pose: PoseStamped, target_pose: PoseStamped) -> dict[str, Any]:
+        source_position = np.array(
+            [
+                source_pose.pose.position.x,
+                source_pose.pose.position.y,
+                source_pose.pose.position.z,
+            ],
+            dtype=float,
+        )
+        target_position = np.array(
+            [
+                target_pose.pose.position.x,
+                target_pose.pose.position.y,
+                target_pose.pose.position.z,
+            ],
+            dtype=float,
+        )
+        position_delta = target_position - source_position
+
+        source_rotation = quaternion_matrix(
+            [
+                source_pose.pose.orientation.x,
+                source_pose.pose.orientation.y,
+                source_pose.pose.orientation.z,
+                source_pose.pose.orientation.w,
+            ]
+        )[:3, :3]
+        target_rotation = quaternion_matrix(
+            [
+                target_pose.pose.orientation.x,
+                target_pose.pose.orientation.y,
+                target_pose.pose.orientation.z,
+                target_pose.pose.orientation.w,
+            ]
+        )[:3, :3]
+        rotation_delta = self.rotation_vector_from_matrix(source_rotation.T @ target_rotation)
+
+        return {
+            "position_m": {
+                "x": float(position_delta[0]),
+                "y": float(position_delta[1]),
+                "z": float(position_delta[2]),
+            },
+            "position_norm_m": float(np.linalg.norm(position_delta)),
+            "rotation_rotvec_rad": {
+                "x": float(rotation_delta[0]),
+                "y": float(rotation_delta[1]),
+                "z": float(rotation_delta[2]),
+            },
+            "rotation_norm_rad": float(np.linalg.norm(rotation_delta)),
         }
 
     @staticmethod

@@ -33,6 +33,12 @@ def generate_launch_description():
     max_tcp_delta_rotvec = LaunchConfiguration("max_tcp_delta_rotvec_rad")
     position_max_tcp_offset = LaunchConfiguration("position_max_tcp_offset_m")
     position_max_tcp_rotvec = LaunchConfiguration("position_max_tcp_rotvec_rad")
+    position_reanchor_when_stationary = LaunchConfiguration("position_reanchor_when_stationary")
+    position_stationary_translation = LaunchConfiguration("position_stationary_translation_m")
+    position_stationary_rotation = LaunchConfiguration("position_stationary_rotation_rad")
+    position_stationary_hold = LaunchConfiguration("position_stationary_hold_sec")
+    position_resume_translation = LaunchConfiguration("position_resume_translation_m")
+    position_resume_rotation = LaunchConfiguration("position_resume_rotation_rad")
     rotation_scale = LaunchConfiguration("rotation_scale")
     target_lead_time = LaunchConfiguration("target_lead_time_sec")
     max_controller_angle = LaunchConfiguration("max_controller_angle_rad")
@@ -66,6 +72,7 @@ def generate_launch_description():
     error_recovery_cooldown = LaunchConfiguration("error_recovery_cooldown_sec")
     post_error_recovery_hold = LaunchConfiguration("post_error_recovery_hold_sec")
     relative_dynamics_factor = LaunchConfiguration("relative_dynamics_factor")
+    stop_relative_dynamics_factor = LaunchConfiguration("stop_relative_dynamics_factor")
     command_rate_hz = LaunchConfiguration("command_rate_hz")
     control_command_mode = LaunchConfiguration("control_command_mode")
     velocity_command_duration = LaunchConfiguration("velocity_command_duration_sec")
@@ -115,6 +122,12 @@ def generate_launch_description():
             DeclareLaunchArgument("max_tcp_delta_rotvec_rad", default_value="0.035"),
             DeclareLaunchArgument("position_max_tcp_offset_m", default_value="0.35"),
             DeclareLaunchArgument("position_max_tcp_rotvec_rad", default_value="0.50"),
+            DeclareLaunchArgument("position_reanchor_when_stationary", default_value="false"),
+            DeclareLaunchArgument("position_stationary_translation_m", default_value="0.0010"),
+            DeclareLaunchArgument("position_stationary_rotation_rad", default_value="0.0030"),
+            DeclareLaunchArgument("position_stationary_hold_sec", default_value="0.12"),
+            DeclareLaunchArgument("position_resume_translation_m", default_value="0.0030"),
+            DeclareLaunchArgument("position_resume_rotation_rad", default_value="0.0200"),
             DeclareLaunchArgument("rotation_scale", default_value="1.0"),
             DeclareLaunchArgument("target_lead_time_sec", default_value="0.25"),
             DeclareLaunchArgument("max_controller_angle_rad", default_value="0.9"),
@@ -153,6 +166,7 @@ def generate_launch_description():
             DeclareLaunchArgument("error_recovery_cooldown_sec", default_value="1.0"),
             DeclareLaunchArgument("post_error_recovery_hold_sec", default_value="0.60"),
             DeclareLaunchArgument("relative_dynamics_factor", default_value="0.05"),
+            DeclareLaunchArgument("stop_relative_dynamics_factor", default_value="-1.0"),
             DeclareLaunchArgument("command_rate_hz", default_value="30.0"),
             DeclareLaunchArgument("control_command_mode", default_value="pose"),
             DeclareLaunchArgument("velocity_command_duration_sec", default_value="0.15"),
@@ -222,6 +236,30 @@ def generate_launch_description():
                         ),
                         "position_max_tcp_rotvec_rad": ParameterValue(
                             position_max_tcp_rotvec,
+                            value_type=float,
+                        ),
+                        "position_reanchor_when_stationary": ParameterValue(
+                            position_reanchor_when_stationary,
+                            value_type=bool,
+                        ),
+                        "position_stationary_translation_m": ParameterValue(
+                            position_stationary_translation,
+                            value_type=float,
+                        ),
+                        "position_stationary_rotation_rad": ParameterValue(
+                            position_stationary_rotation,
+                            value_type=float,
+                        ),
+                        "position_stationary_hold_sec": ParameterValue(
+                            position_stationary_hold,
+                            value_type=float,
+                        ),
+                        "position_resume_translation_m": ParameterValue(
+                            position_resume_translation,
+                            value_type=float,
+                        ),
+                        "position_resume_rotation_rad": ParameterValue(
+                            position_resume_rotation,
                             value_type=float,
                         ),
                         "rotation_scale": ParameterValue(rotation_scale, value_type=float),
@@ -331,6 +369,10 @@ def generate_launch_description():
                         ),
                         "relative_dynamics_factor": ParameterValue(
                             relative_dynamics_factor,
+                            value_type=float,
+                        ),
+                        "stop_relative_dynamics_factor": ParameterValue(
+                            stop_relative_dynamics_factor,
                             value_type=float,
                         ),
                         "stop_on_disable": ParameterValue(stop_on_disable, value_type=bool),
