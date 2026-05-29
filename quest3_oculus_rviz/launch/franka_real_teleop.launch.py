@@ -9,9 +9,11 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    config_file = LaunchConfiguration("config_file")
     robot_ip = LaunchConfiguration("robot_ip")
     start_franka = LaunchConfiguration("start_franka")
     start_rviz = LaunchConfiguration("start_rviz")
+    start_plot = LaunchConfiguration("start_plot")
     publish_world_to_base_tf = LaunchConfiguration("publish_world_to_base_tf")
 
     mock = LaunchConfiguration("mock")
@@ -87,6 +89,13 @@ def generate_launch_description():
     rviz_config = PathJoinSubstitution(
         [FindPackageShare("quest3_oculus_rviz"), "rviz", "quest3_oculus.rviz"]
     )
+    default_config_file = PathJoinSubstitution(
+        [
+            FindPackageShare("quest3_oculus_rviz"),
+            "config",
+            "franka_real_teleop_velocity_pose.yaml",
+        ]
+    )
     panda_urdf = (
         get_package_share_directory("moveit_resources_panda_description")
         + "/urdf/panda.urdf"
@@ -96,9 +105,18 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "config_file",
+                default_value=default_config_file,
+                description=(
+                    "ROS parameter YAML loaded after launch defaults. "
+                    "Edit this file to manage teleop/control parameters."
+                ),
+            ),
             DeclareLaunchArgument("robot_ip", default_value="172.16.0.3"),
             DeclareLaunchArgument("start_franka", default_value="true"),
             DeclareLaunchArgument("start_rviz", default_value="true"),
+            DeclareLaunchArgument("start_plot", default_value="false"),
             DeclareLaunchArgument("publish_world_to_base_tf", default_value="true"),
             DeclareLaunchArgument("mock", default_value="false"),
             DeclareLaunchArgument("quest_ip_address", default_value=""),
@@ -129,7 +147,7 @@ def generate_launch_description():
             DeclareLaunchArgument("position_resume_translation_m", default_value="0.0030"),
             DeclareLaunchArgument("position_resume_rotation_rad", default_value="0.0200"),
             DeclareLaunchArgument("rotation_scale", default_value="1.0"),
-            DeclareLaunchArgument("target_lead_time_sec", default_value="0.25"),
+            DeclareLaunchArgument("target_lead_time_sec", default_value="0.0"),
             DeclareLaunchArgument("max_controller_angle_rad", default_value="0.9"),
             DeclareLaunchArgument("roll_sign", default_value="1.0"),
             DeclareLaunchArgument("pitch_sign", default_value="1.0"),
@@ -204,7 +222,8 @@ def generate_launch_description():
                         "world_frame": base_frame,
                         "right_frame": "quest3_right_controller_raw",
                         "left_frame": "quest3_left_controller_raw",
-                    }
+                    },
+                    config_file,
                 ],
             ),
             Node(
@@ -284,7 +303,8 @@ def generate_launch_description():
                         "gripper_command_topic": gripper_command_topic,
                         "gripper_open_button_name": gripper_open_button_name,
                         "gripper_close_button_name": gripper_close_button_name,
-                    }
+                    },
+                    config_file,
                 ],
             ),
             Node(
@@ -300,7 +320,8 @@ def generate_launch_description():
                         "damping": ParameterValue(ik_damping, value_type=float),
                         "orientation_weight": ParameterValue(ik_orientation_weight, value_type=float),
                         "max_joint_step_rad": ParameterValue(ik_max_joint_step_rad, value_type=float),
-                    }
+                    },
+                    config_file,
                 ],
                 condition=UnlessCondition(start_franka),
             ),
@@ -376,7 +397,8 @@ def generate_launch_description():
                             value_type=float,
                         ),
                         "stop_on_disable": ParameterValue(stop_on_disable, value_type=bool),
-                    }
+                    },
+                    config_file,
                 ],
                 condition=IfCondition(start_franka),
             ),
@@ -387,6 +409,20 @@ def generate_launch_description():
                 arguments=["-d", rviz_config],
                 output="screen",
                 condition=IfCondition(start_rviz),
+            ),
+            Node(
+                package="quest3_oculus_rviz",
+                executable="teleop_realtime_plot_node",
+                name="teleop_realtime_plot",
+                output="screen",
+                parameters=[
+                    {
+                        "controller_pose_topic": "quest3/right_controller/pose",
+                        "tcp_pose_topic": current_pose_topic,
+                    },
+                    config_file,
+                ],
+                condition=IfCondition(start_plot),
             ),
         ]
     )

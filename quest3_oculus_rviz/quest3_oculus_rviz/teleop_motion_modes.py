@@ -35,10 +35,11 @@ class VelocityTeleopMotionMode:
             node.translation_deadband,
         )
         tcp_base_position, tcp_base_rotation, tcp_base_source = node.current_tcp_base_pose(now)
-        target_lead_scale = node.target_lead_scale(dt, tcp_base_source)
-        tcp_delta_body_unfiltered = (
-            deadbanded_delta_control * node.translation_scale * target_lead_scale
-        )
+        del dt
+        # Velocity/pose uses explicit scale parameters only.  The old lead-time
+        # multiplier made frame deltas too jumpy for Franky CartesianMotion.
+        target_lead_scale = 1.0
+        tcp_delta_body_unfiltered = deadbanded_delta_control * node.translation_scale
         tcp_delta_body_clamped = node.clamp_vector_norm(
             tcp_delta_body_unfiltered,
             node.max_tcp_delta_body,
@@ -46,6 +47,7 @@ class VelocityTeleopMotionMode:
         node.filtered_tcp_delta_body = node.filtered_delta(
             tcp_delta_body_clamped,
             node.filtered_tcp_delta_body,
+            node.translation_delta_filter_alpha,
         )
         tcp_delta_body = node.filtered_tcp_delta_body
         node.tcp_position = node.clamp_position(
@@ -65,9 +67,7 @@ class VelocityTeleopMotionMode:
             tcp_delta_rotvec,
             node.rotation_deadband,
         )
-        tcp_delta_rotvec_unfiltered = (
-            tcp_delta_rotvec * node.rotation_scale * target_lead_scale
-        )
+        tcp_delta_rotvec_unfiltered = tcp_delta_rotvec * node.rotation_scale
         tcp_delta_rotvec_clamped = node.clamp_vector_norm(
             tcp_delta_rotvec_unfiltered,
             node.max_tcp_delta_rotvec,
@@ -75,6 +75,7 @@ class VelocityTeleopMotionMode:
         node.filtered_tcp_delta_rotvec = node.filtered_delta(
             tcp_delta_rotvec_clamped,
             node.filtered_tcp_delta_rotvec,
+            node.rotation_delta_filter_alpha,
         )
         tcp_delta_rotation = node.rotation_matrix_from_rotvec(node.filtered_tcp_delta_rotvec)
         node.tcp_rotation = tcp_base_rotation @ tcp_delta_rotation
@@ -184,6 +185,7 @@ class PositionTeleopMotionMode:
         node.filtered_tcp_delta_body = node.filtered_delta(
             tcp_delta_body_clamped,
             node.filtered_tcp_delta_body,
+            node.translation_delta_filter_alpha,
         )
         tcp_delta_body = node.filtered_tcp_delta_body
         node.tcp_position = node.clamp_position(
@@ -215,6 +217,7 @@ class PositionTeleopMotionMode:
         node.filtered_tcp_delta_rotvec = node.filtered_delta(
             tcp_delta_rotvec_clamped,
             node.filtered_tcp_delta_rotvec,
+            node.rotation_delta_filter_alpha,
         )
         tcp_delta_rotation = node.rotation_matrix_from_rotvec(node.filtered_tcp_delta_rotvec)
         node.tcp_rotation = node.anchor_tcp_rotation @ tcp_delta_rotation

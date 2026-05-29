@@ -53,6 +53,8 @@ class RightHandTeleopSimNode(Node):
         self.declare_parameter("translation_deadband_m", 0.0015)
         self.declare_parameter("rotation_deadband_rad", 0.004)
         self.declare_parameter("delta_filter_alpha", 0.45)
+        self.declare_parameter("translation_delta_filter_alpha", -1.0)
+        self.declare_parameter("rotation_delta_filter_alpha", -1.0)
         self.declare_parameter("max_tcp_delta_body_m", 0.025)
         self.declare_parameter("max_tcp_delta_rotvec_rad", 0.035)
         self.declare_parameter("position_max_tcp_offset_m", 0.35)
@@ -64,7 +66,7 @@ class RightHandTeleopSimNode(Node):
         self.declare_parameter("position_resume_translation_m", 0.0030)
         self.declare_parameter("position_resume_rotation_rad", 0.0200)
         self.declare_parameter("rotation_scale", 1.0)
-        self.declare_parameter("target_lead_time_sec", 0.25)
+        self.declare_parameter("target_lead_time_sec", 0.0)
         self.declare_parameter("max_controller_angle_rad", 0.9)
         self.declare_parameter("start_xyz", [0.45, 0.0, 0.35])
         self.declare_parameter("start_rpy", [0.0, math.pi, 0.0])
@@ -134,6 +136,14 @@ class RightHandTeleopSimNode(Node):
         self.translation_deadband = max(float(self.get_parameter("translation_deadband_m").value), 0.0)
         self.rotation_deadband = max(float(self.get_parameter("rotation_deadband_rad").value), 0.0)
         self.delta_filter_alpha = self.clamp(float(self.get_parameter("delta_filter_alpha").value), 0.0, 1.0)
+        self.translation_delta_filter_alpha = self.load_optional_filter_alpha(
+            "translation_delta_filter_alpha",
+            self.delta_filter_alpha,
+        )
+        self.rotation_delta_filter_alpha = self.load_optional_filter_alpha(
+            "rotation_delta_filter_alpha",
+            self.delta_filter_alpha,
+        )
         self.max_tcp_delta_body = max(float(self.get_parameter("max_tcp_delta_body_m").value), 0.0)
         self.max_tcp_delta_rotvec = max(float(self.get_parameter("max_tcp_delta_rotvec_rad").value), 0.0)
         self.position_max_tcp_offset = max(
@@ -168,7 +178,6 @@ class RightHandTeleopSimNode(Node):
             self.position_stationary_rotation,
         )
         self.rotation_scale = float(self.get_parameter("rotation_scale").value)
-        self.target_lead_time = float(self.get_parameter("target_lead_time_sec").value)
         self.max_controller_angle = float(self.get_parameter("max_controller_angle_rad").value)
         self.workspace_min = np.array(self.get_parameter("workspace_min").value, dtype=float)
         self.workspace_max = np.array(self.get_parameter("workspace_max").value, dtype=float)
@@ -586,9 +595,8 @@ class RightHandTeleopSimNode(Node):
         self.teleop_motion_strategy.update(self, now, dt)
 
     def target_lead_scale(self, dt: float, tcp_base_source: str) -> float:
-        if tcp_base_source != "external_live" or self.target_lead_time <= 0.0:
-            return 1.0
-        return min(max(self.target_lead_time / max(dt, 1e-3), 1.0), 25.0)
+        del dt, tcp_base_source
+        return 1.0
 
     def compute_twist_from_tcp_delta(
         self,
@@ -644,12 +652,13 @@ class RightHandTeleopSimNode(Node):
             "tcp_base_source": self.last_tcp_base_source,
             "publish_rate_hz": self.publish_rate_hz,
             "update_dt_sec": self.last_update_dt_sec,
-            "target_lead_time_sec": self.target_lead_time,
             "target_lead_scale": self.last_target_lead_scale,
             "translation_axis_sign": self.translation_axis_sign.tolist(),
             "translation_deadband_m": self.translation_deadband,
             "rotation_deadband_rad": self.rotation_deadband,
             "delta_filter_alpha": self.delta_filter_alpha,
+            "translation_delta_filter_alpha": self.translation_delta_filter_alpha,
+            "rotation_delta_filter_alpha": self.rotation_delta_filter_alpha,
             "max_tcp_delta_body_m": self.max_tcp_delta_body,
             "max_tcp_delta_rotvec_rad": self.max_tcp_delta_rotvec,
             "position_max_tcp_offset_m": self.position_max_tcp_offset,
@@ -1198,11 +1207,23 @@ class RightHandTeleopSimNode(Node):
             return vector
         return vector * (maximum_norm / norm)
 
-    def filtered_delta(self, current_delta: np.ndarray, previous_delta: np.ndarray) -> np.ndarray:
+    def filtered_delta(
+        self,
+        current_delta: np.ndarray,
+        previous_delta: np.ndarray,
+        alpha: float | None = None,
+    ) -> np.ndarray:
         if float(np.linalg.norm(current_delta)) < 1e-12:
             return np.zeros_like(current_delta)
-        alpha = self.delta_filter_alpha
+        if alpha is None:
+            alpha = self.delta_filter_alpha
         return alpha * current_delta + (1.0 - alpha) * previous_delta
+
+    def load_optional_filter_alpha(self, parameter_name: str, fallback: float) -> float:
+        configured = float(self.get_parameter(parameter_name).value)
+        if configured < 0.0:
+            return fallback
+        return self.clamp(configured, 0.0, 1.0)
 
     def clamp_position(self, position: np.ndarray) -> np.ndarray:
         return np.minimum(np.maximum(position, self.workspace_min), self.workspace_max)

@@ -447,7 +447,7 @@ def generate_launch_description():
             DeclareLaunchArgument("position_resume_translation_m", default_value="0.0030"),
             DeclareLaunchArgument("position_resume_rotation_rad", default_value="0.0200"),
             DeclareLaunchArgument("rotation_scale", default_value="1.0"),
-            DeclareLaunchArgument("target_lead_time_sec", default_value="0.30"),
+            DeclareLaunchArgument("target_lead_time_sec", default_value="0.0"),
             DeclareLaunchArgument("max_controller_angle_rad", default_value="0.9"),
             DeclareLaunchArgument("roll_sign", default_value="1.0"),
             DeclareLaunchArgument("pitch_sign", default_value="1.0"),

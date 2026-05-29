@@ -10,6 +10,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
+        (f"share/{package_name}/config", glob("config/*.yaml")),
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
         (f"share/{package_name}/rviz", glob("rviz/*.rviz")),
     ],
@@ -27,6 +28,7 @@ setup(
             "hand_teleop_sim_node = quest3_oculus_rviz.right_hand_teleop_sim_node:main",
             "right_hand_teleop_sim_node = quest3_oculus_rviz.right_hand_teleop_sim_node:main",
             "franky_cartesian_pose_node = quest3_oculus_rviz.franky_cartesian_pose_node:main",
+            "teleop_realtime_plot_node = quest3_oculus_rviz.teleop_realtime_plot_node:main",
         ],
     },
 )

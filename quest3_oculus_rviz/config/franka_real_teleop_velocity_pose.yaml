@@ -1,0 +1,202 @@
+# Single-arm Quest3 -> Franka real teleop profile.
+#
+# Mode:
+#   teleop_motion_mode=velocity
+#   control_command_mode=pose
+#
+# This file is loaded by franka_real_teleop.launch.py through config_file.
+# Values here override the launch file's built-in defaults for the matching node names.
+
+quest3_oculus_tf:
+  ros__parameters:
+    # Quest 数据读取和手柄 pose 发布频率，单位 Hz。
+    publish_rate_hz: 50.0
+    # 发布出来的 Quest 手柄 pose 所在的世界坐标系。
+    world_frame: panda_link0
+    # 右手柄原始 TF frame 名称。
+    right_frame: quest3_right_controller_raw
+    # 左手柄原始 TF frame 名称；单臂右手遥操作时通常只用于保留 Quest 原始输出。
+    left_frame: quest3_left_controller_raw
+
+right_hand_teleop_sim:
+  ros__parameters:
+    # 手柄 delta 映射到 Franka TCP target 时使用的基坐标系。
+    world_frame: panda_link0
+    # trigger 数值超过该阈值后认为遥操作启用。
+    trigger_threshold: 0.5
+    # 是否把手柄坐标系预对齐到 TCP 坐标系；当前 velocity/pose 标定使用 false。
+    align_controller_frame_to_tcp: false
+
+    # 手柄侧目标生成模式；本配置固定为 velocity，即使用手柄前后帧 delta 生成 TCP target。
+    teleop_motion_mode: velocity
+
+    # 平移 delta 放大系数；手柄每帧位移乘以该值后映射到 TCP target 位移。
+    translation_scale: 1.6
+    # X 方向符号，1.0 保持方向，-1.0 反向。
+    translation_x_sign: 1.0
+    # Y 方向符号，1.0 保持方向，-1.0 反向。
+    translation_y_sign: 1.0
+    # Z 方向符号，1.0 保持方向，-1.0 反向。
+    translation_z_sign: 1.0
+    # 平移死区，单位 m；小于该幅度的手柄帧间平移会被吞掉。
+    translation_deadband_m: 0.00025
+
+    # 旋转 delta 放大系数；手柄每帧姿态变化乘以该值后映射到 TCP target 姿态变化。
+    rotation_scale: 2.4
+    # roll 方向符号，1.0 保持方向，-1.0 反向。
+    roll_sign: 1.0
+    # pitch 方向符号，1.0 保持方向，-1.0 反向。
+    pitch_sign: 1.0
+    # yaw 方向符号，1.0 保持方向，-1.0 反向。
+    yaw_sign: 1.0
+    # 旋转死区，单位 rad；小于该幅度的手柄帧间旋转会被吞掉。
+    rotation_deadband_rad: 0.00020
+
+    # 通用 delta 一阶滤波系数；1.0 表示直接用当前 delta，越小越平滑但越滞后。
+    delta_filter_alpha: 1.0
+    # 平移 delta 专用滤波系数；设置后覆盖 delta_filter_alpha 对平移的作用。
+    translation_delta_filter_alpha: 1.0
+    # 旋转 delta 专用滤波系数；设置后覆盖 delta_filter_alpha 对旋转的作用。
+    rotation_delta_filter_alpha: 1.0
+    # 单周期 TCP 平移增量限幅，单位 m；限制每帧 target 最大跳变。
+    max_tcp_delta_body_m: 0.050
+    # 单周期 TCP 旋转增量限幅，单位 rad；限制每帧 target 姿态最大跳变。
+    max_tcp_delta_rotvec_rad: 1.50
+    # 单轴手柄帧间旋转向量限幅，单位 rad；防止 Quest 姿态瞬时跳变造成大旋转指令。
+    max_controller_angle_rad: 1.56
+
+    # 是否把手柄、target、真实 TCP 等调试数据写入 JSONL 日志。
+    pose_log_enabled: true
+    # JSONL 日志记录频率，单位 Hz；只影响日志密度，不影响控制频率。
+    pose_log_rate_hz: 30.0
+    # JSONL 日志目录；空字符串表示使用工作区 log 目录。
+    pose_log_dir: ""
+
+    # 输入的右手柄 pose 话题。
+    controller_pose_topic: quest3/right_controller/pose
+    # 输入的 Quest 按键状态话题，用于读取 trigger、A、B 等。
+    buttons_topic: quest3/buttons
+    # 输出的 Franka TCP target pose 话题，Franky 节点订阅该话题。
+    target_pose_topic: /franka_sim/tcp_target_pose
+    # 输出的遥操作 twist 调试话题，可用于观察手柄映射后的速度趋势。
+    twist_topic: /quest3/right_teleop/twist
+    # 输出的遥操作启用状态话题，trigger 按下时为 true。
+    enabled_topic: /quest3/right_teleop/enabled
+    # 输出的手柄侧调试信息话题，包含 delta、target、限幅、滤波等信息。
+    debug_topic: /quest3/right_teleop/debug
+    # 输入的真实 Franka TCP pose 话题，用于让 target 基于真实末端继续叠加。
+    external_tcp_pose_topic: /franka_franky/current_pose
+    # trigger 未按下时，是否把内部 target 同步到真实 TCP，避免再次启用时 target 跳变。
+    sync_external_tcp_when_idle: true
+    # 真实 TCP pose 超时时间，单位 s；超过后不再认为外部 TCP 反馈新鲜。
+    external_tcp_pose_timeout_sec: 0.25
+
+    # 是否启用手柄按键控制夹爪。
+    gripper_buttons_enabled: true
+    # 输出的夹爪命令话题，Franky 节点订阅该话题。
+    gripper_command_topic: /quest3/right_teleop/gripper_command
+    # 打开夹爪使用的 Quest 按键名。
+    gripper_open_button_name: A
+    # 关闭夹爪使用的 Quest 按键名。
+    gripper_close_button_name: B
+
+franky_cartesian_pose:
+  ros__parameters:
+    # Franka 机器人 IP 地址。
+    robot_ip: 172.16.0.2
+    # Franky 节点发布和解释 TCP pose 使用的基坐标系。
+    base_frame: panda_link0
+    # 输入的 TCP target pose 话题，来自 right_hand_teleop_sim。
+    target_pose_topic: /franka_sim/tcp_target_pose
+    # 输入的遥操作启用状态话题；false 或超时后会触发停止逻辑。
+    enabled_topic: /quest3/right_teleop/enabled
+    # 输出的真实 Franka TCP 当前位姿话题。
+    current_pose_topic: /franka_franky/current_pose
+    # 输出的 Franky 侧调试信息话题，包含 target 与真实 TCP 差值、限速结果等。
+    debug_topic: /franka_franky/debug
+    # 输出的关节状态话题，供 RViz 显示真实关节状态。
+    joint_state_topic: /joint_states
+
+    # 真实 TCP 状态读取、current_pose/debug 发布频率，单位 Hz。
+    publish_rate_hz: 50.0
+    # Franky 运动命令下发频率，单位 Hz；velocity/pose 下按该频率发送受限后的 CartesianMotion。
+    command_rate_hz: 30.0
+    # Franky 侧执行模式；本配置固定为 pose，即发送绝对 CartesianMotion 位姿命令。
+    control_command_mode: pose
+    # 计算下一步受限位姿时使用的前瞻时间，单位 s；越小越贴近当前 target，越大越平滑。
+    command_target_lookahead_sec: 0.04
+    # target pose 最大允许缓存时间，单位 s；超过后认为 target 失效并停止。
+    target_timeout_sec: 0.25
+    # enabled 状态最大允许缓存时间，单位 s；超过后认为 trigger 已失效并停止。
+    enabled_timeout_sec: 0.08
+
+    # Franky 侧最大 TCP 平移速度，单位 m/s；限制追 target 的线速度。
+    max_linear_velocity_mps: 0.60
+    # Franky 侧最大 TCP 角速度，单位 rad/s；限制追 target 的旋转速度。
+    max_angular_velocity_radps: 8.0
+    # Franky 侧最大 TCP 平移加速度，单位 m/s^2；限制线速度变化，过大可能触发 Franka reflex。
+    max_linear_acceleration_mps2: 2.80
+    # Franky 侧最大 TCP 角加速度，单位 rad/s^2；限制角速度变化，过大可能触发 Franka reflex。
+    max_angular_acceleration_radps2: 12.00
+    # trigger 启用瞬间 target 与真实 TCP 的最大允许平移差，单位 m；超过则拒绝启动，防止跳点。
+    max_initial_target_distance_m: 0.32
+    # trigger 启用瞬间 target 与真实 TCP 的最大允许姿态差，单位 rad；超过则拒绝启动。
+    max_initial_target_angle_rad: 1.4
+
+    # Franky 运动动态因子；值越大通常越激进，速度/加速度限制仍会先约束下一步位姿。
+    relative_dynamics_factor: 0.22
+    # 停止 motion 使用的动态因子；越大通常停得更干脆，但过大可能带来冲击感。
+    stop_relative_dynamics_factor: 0.50
+    # trigger 松开、enabled 超时或 target 超时时是否主动发送停止 motion。
+    stop_on_disable: true
+
+    # Franka 出错后是否自动尝试 error recovery。
+    automatic_error_recovery: true
+    # 两次自动 error recovery 之间的冷却时间，单位 s。
+    error_recovery_cooldown_sec: 1.0
+    # error recovery 后保持停止的时间，单位 s；避免恢复后立刻继续执行旧 target。
+    post_error_recovery_hold_sec: 0.60
+
+    # 是否启用 Franky 夹爪控制。
+    enable_gripper: true
+    # 输入的夹爪命令话题，来自 right_hand_teleop_sim。
+    gripper_command_topic: /quest3/right_teleop/gripper_command
+    # 关闭夹爪目标宽度，单位 m；0.0 表示完全闭合。
+    gripper_close_width_m: 0.0
+    # 夹爪开合速度，单位 m/s。
+    gripper_speed_mps: 0.04
+    # close 命令是否使用 grasp 动作；false 表示普通 move 到 close_width。
+    gripper_close_use_grasp: false
+    # 使用 grasp 动作时的夹持力，单位 N；gripper_close_use_grasp=false 时基本不生效。
+    gripper_force_n: 30.0
+
+teleop_realtime_plot:
+  ros__parameters:
+    # 三维轨迹图订阅的手柄 pose 话题。
+    controller_pose_topic: quest3/right_controller/pose
+    # 三维轨迹图订阅的真实 TCP pose 话题。
+    tcp_pose_topic: /franka_franky/current_pose
+    # 三维轨迹图订阅的 trigger/遥操作启用状态话题。
+    enabled_topic: /quest3/right_teleop/enabled
+    # 三维轨迹图保留最近多少秒的轨迹数据。
+    window_sec: 20.0
+    # 三维轨迹图最多保留多少个采样点。
+    max_points: 2500
+    # 三维轨迹图刷新频率，单位 Hz；只影响显示，不影响控制。
+    plot_update_hz: 20.0
+    # 是否把手柄和 TCP 轨迹都显示为相对起点的位移。
+    relative_to_first_sample: true
+    # 是否只有 trigger 按下时才记录手柄轨迹。
+    record_controller_only_when_enabled: true
+    # 每次 trigger 从松开变为按下时，是否清空手柄旧轨迹并重新设定手柄轨迹原点。
+    reset_controller_trace_on_enable: true
+    # 手柄轨迹面板标题。
+    controller_label: Quest controller 3D relative trajectory
+    # TCP 轨迹面板标题。
+    tcp_label: Franka TCP 3D relative trajectory
+    # 三维轨迹投影视角的 yaw 角，单位 deg；只影响显示视角。
+    view_yaw_deg: -45.0
+    # 三维轨迹投影视角的 pitch 角，单位 deg；只影响显示视角。
+    view_pitch_deg: 32.0
+    # 自动缩放留白系数；越大轨迹在图里看起来越小。
+    auto_scale_margin: 1.25
