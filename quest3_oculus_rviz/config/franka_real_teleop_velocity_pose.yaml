@@ -144,7 +144,7 @@ franky_cartesian_pose:
     max_initial_target_angle_rad: 1.4
 
     # Franky 运动动态因子；值越大通常越激进，速度/加速度限制仍会先约束下一步位姿。
-    relative_dynamics_factor: 0.22
+    relative_dynamics_factor: 0.35
     # 停止 motion 使用的动态因子；越大通常停得更干脆，但过大可能带来冲击感。
     stop_relative_dynamics_factor: 0.50
     # trigger 松开、enabled 超时或 target 超时时是否主动发送停止 motion。

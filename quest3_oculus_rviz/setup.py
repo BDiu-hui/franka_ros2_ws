@@ -29,6 +29,8 @@ setup(
             "right_hand_teleop_sim_node = quest3_oculus_rviz.right_hand_teleop_sim_node:main",
             "franky_cartesian_pose_node = quest3_oculus_rviz.franky_cartesian_pose_node:main",
             "teleop_realtime_plot_node = quest3_oculus_rviz.teleop_realtime_plot_node:main",
+            "simple_quest_impedance_teleop_node = "
+            "quest3_oculus_rviz.simple_quest_impedance_teleop_node:main",
         ],
     },
 )
