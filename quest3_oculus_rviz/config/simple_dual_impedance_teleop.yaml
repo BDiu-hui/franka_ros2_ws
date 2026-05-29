@@ -1,0 +1,89 @@
+left_simple_quest_impedance_teleop:
+  ros__parameters:
+    publish_rate_hz: 50.0
+    input_mode: topics
+    controller_key: l
+    controller_pose_topic: /quest3/left_controller/pose
+    buttons_topic: /quest3/buttons
+    topic_pose_timeout_sec: 0.25
+
+    base_frame: base
+    current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
+    target_pose_topic: /left/cartesian_impedance_controller/equilibrium_pose
+
+    raw_pose_topic: /quest3/left_controller/raw_pose
+    enabled_topic: /quest3/left_impedance_teleop/enabled
+    delta_topic: /quest3/left_impedance_teleop/delta
+    debug_topic: /quest3/left_impedance_teleop/debug
+
+    enable_button_name: ""
+    enable_analog_name: leftGrip
+    enable_threshold: 0.5
+
+    translation_scale: 0.6
+    rotation_scale: 0.6
+    translation_deadband_m: 0.0005
+    rotation_deadband_rad: 0.003
+    max_translation_step_m: 0.01
+    max_rotation_step_rad: 0.08
+    quest_pose_grace_period_sec: 0.25
+    reader_restart_timeout_sec: 2.0
+    sync_target_with_current_pose_when_idle: true
+
+    workspace_min: [0.20, -0.45, 0.08]
+    workspace_max: [0.80, 0.45, 0.75]
+
+    translation_sign: [-1.0, 1.0, 1.0]
+    rotation_sign: [1.0, -1.0, 1.0]
+
+    quest_to_robot_rotation:
+      [
+        0.0, 0.0, 1.0,
+        -1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+      ]
+
+right_simple_quest_impedance_teleop:
+  ros__parameters:
+    publish_rate_hz: 50.0
+    input_mode: topics
+    controller_key: r
+    controller_pose_topic: /quest3/right_controller/pose
+    buttons_topic: /quest3/buttons
+    topic_pose_timeout_sec: 0.25
+
+    base_frame: base
+    current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
+    target_pose_topic: /right/cartesian_impedance_controller/equilibrium_pose
+
+    raw_pose_topic: /quest3/right_controller/raw_pose
+    enabled_topic: /quest3/right_impedance_teleop/enabled
+    delta_topic: /quest3/right_impedance_teleop/delta
+    debug_topic: /quest3/right_impedance_teleop/debug
+
+    enable_button_name: ""
+    enable_analog_name: rightGrip
+    enable_threshold: 0.5
+
+    translation_scale: 0.6
+    rotation_scale: 0.6
+    translation_deadband_m: 0.0005
+    rotation_deadband_rad: 0.003
+    max_translation_step_m: 0.01
+    max_rotation_step_rad: 0.08
+    quest_pose_grace_period_sec: 0.25
+    reader_restart_timeout_sec: 2.0
+    sync_target_with_current_pose_when_idle: true
+
+    workspace_min: [0.20, -0.45, 0.08]
+    workspace_max: [0.80, 0.45, 0.75]
+
+    translation_sign: [-1.0, 1.0, 1.0]
+    rotation_sign: [1.0, -1.0, 1.0]
+
+    quest_to_robot_rotation:
+      [
+        0.0, 0.0, 1.0,
+        -1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+      ]

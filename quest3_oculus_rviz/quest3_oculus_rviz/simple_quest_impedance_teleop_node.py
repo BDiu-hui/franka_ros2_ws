@@ -21,6 +21,11 @@ class SimpleQuestImpedanceTeleopNode(Node):
 
         self.declare_parameter("ip_address", "")
         self.declare_parameter("port", 5555)
+        self.declare_parameter("input_mode", "reader")
+        self.declare_parameter("controller_key", "r")
+        self.declare_parameter("controller_pose_topic", "/quest3/right_controller/pose")
+        self.declare_parameter("buttons_topic", "/quest3/buttons")
+        self.declare_parameter("topic_pose_timeout_sec", 0.25)
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("base_frame", "fr3_link0")
         self.declare_parameter(
@@ -74,6 +79,14 @@ class SimpleQuestImpedanceTeleopNode(Node):
 
         self.ip_address = str(self.get_parameter("ip_address").value).strip()
         self.port = int(self.get_parameter("port").value)
+        self.input_mode = str(self.get_parameter("input_mode").value).strip().lower()
+        self.controller_key = str(self.get_parameter("controller_key").value).strip().lower()
+        self.controller_pose_topic = str(self.get_parameter("controller_pose_topic").value)
+        self.buttons_topic = str(self.get_parameter("buttons_topic").value)
+        self.topic_pose_timeout = max(
+            float(self.get_parameter("topic_pose_timeout_sec").value),
+            0.0,
+        )
         self.publish_rate_hz = max(float(self.get_parameter("publish_rate_hz").value), 1.0)
         self.base_frame = str(self.get_parameter("base_frame").value)
         self.current_pose_topic = str(self.get_parameter("current_pose_topic").value)
@@ -110,6 +123,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self.quest_to_robot_rotation,
             self.quest_to_robot_handedness,
         ) = self._load_axis_map_parameter("quest_to_robot_rotation")
+        if self.input_mode not in ("reader", "topics"):
+            raise ValueError("input_mode must be 'reader' or 'topics'")
+        if self.controller_key not in ("r", "l"):
+            raise ValueError("controller_key must be 'r' or 'l'")
 
         self.current_position = np.zeros(3, dtype=float)
         self.current_rotation = np.eye(3, dtype=float)
@@ -130,6 +147,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.last_reader_restart_time = 0.0
         self.reader_start_time = time.monotonic()
         self.retired_readers: list[Any] = []
+        self.topic_hand_position: np.ndarray | None = None
+        self.topic_hand_rotation: np.ndarray | None = None
+        self.topic_buttons: dict[str, Any] = {}
+        self.last_topic_pose_time: float | None = None
 
         self.last_missing_quest_log = 0.0
         self.last_missing_robot_pose_log = 0.0
@@ -151,22 +172,41 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.delta_pub = self.create_publisher(TwistStamped, self.delta_topic, 10)
         self.debug_pub = self.create_publisher(String, self.debug_topic, 10)
 
-        from oculus_reader.reader import OculusReader
+        self.reader = None
+        if self.input_mode == "reader":
+            from oculus_reader.reader import OculusReader
 
-        self.OculusReader = OculusReader
-        self.reader_ip = self.ip_address if self.ip_address else None
-        self.reader = self._create_reader()
+            self.OculusReader = OculusReader
+            self.reader_ip = self.ip_address if self.ip_address else None
+            self.reader = self._create_reader()
+        else:
+            self.pose_sub = self.create_subscription(
+                PoseStamped,
+                self.controller_pose_topic,
+                self.controller_pose_callback,
+                10,
+            )
+            self.buttons_sub = self.create_subscription(
+                String,
+                self.buttons_topic,
+                self.buttons_callback,
+                10,
+            )
         period = 1.0 / self.publish_rate_hz
         self.timer = self.create_timer(period, self.timer_callback)
 
-        mode = f"network {self.reader_ip}:{self.port}" if self.reader_ip else "USB"
+        if self.input_mode == "reader":
+            mode = f"network {self.reader_ip}:{self.port}" if self.reader_ip else "USB"
+        else:
+            mode = f"topics pose={self.controller_pose_topic}, buttons={self.buttons_topic}"
         self.get_logger().info(
             "Simple Quest impedance teleop ready. "
-            f"Quest={mode}, current_pose={self.current_pose_topic}, target={self.target_pose_topic}"
+            f"Quest={mode}, controller={self.controller_key}, "
+            f"current_pose={self.current_pose_topic}, target={self.target_pose_topic}"
         )
 
     def destroy_node(self) -> bool:
-        if hasattr(self, "reader"):
+        if getattr(self, "reader", None) is not None:
             self._stop_reader(self.reader)
         for reader in getattr(self, "retired_readers", []):
             self._stop_reader(reader)
@@ -198,18 +238,45 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.current_rotation = quaternion_matrix(quat)[:3, :3]
         self.have_current_pose = True
 
+    def controller_pose_callback(self, msg: PoseStamped) -> None:
+        self.topic_hand_position = np.array(
+            [
+                msg.pose.position.x,
+                msg.pose.position.y,
+                msg.pose.position.z,
+            ],
+            dtype=float,
+        )
+        quat = [
+            msg.pose.orientation.x,
+            msg.pose.orientation.y,
+            msg.pose.orientation.z,
+            msg.pose.orientation.w,
+        ]
+        self.topic_hand_rotation = self._orthonormalize(quaternion_matrix(quat)[:3, :3])
+        self.last_topic_pose_time = time.monotonic()
+
+    def buttons_callback(self, msg: String) -> None:
+        try:
+            parsed = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f"Failed to parse Quest buttons JSON: {exc}")
+            return
+        if isinstance(parsed, dict):
+            self.topic_buttons = parsed
+
     def timer_callback(self) -> None:
         stamp = self.get_clock().now().to_msg()
         now = time.monotonic()
 
-        raw_transforms, raw_buttons = self.reader.get_transformations_and_buttons()
+        raw_transforms, raw_buttons = self._read_raw_quest_data(now)
         raw_transforms = raw_transforms or {}
         raw_buttons = raw_buttons or {}
         self.last_raw_transform_keys = sorted(raw_transforms.keys())
         self.last_raw_button_keys = sorted(raw_buttons.keys())
         self.using_cached_quest_pose = False
 
-        if "r" in raw_transforms:
+        if self.controller_key in raw_transforms:
             self.last_valid_transforms = dict(raw_transforms)
             self.last_valid_buttons = dict(raw_buttons)
             self.last_quest_pose_time = now
@@ -218,7 +285,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         else:
             pose_age = self._quest_pose_age(now)
             use_cached_pose = (
-                "r" in self.last_valid_transforms
+                self.controller_key in self.last_valid_transforms
                 and pose_age is not None
                 and pose_age <= self.quest_pose_grace_period
             )
@@ -230,7 +297,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 transforms = raw_transforms
                 buttons = raw_buttons
 
-        if "r" not in transforms:
+        if self.controller_key not in transforms:
             self._publish_enabled(False)
             self._publish_zero_delta(stamp)
             self._restart_reader_if_stale(now)
@@ -245,21 +312,21 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 delta_robot=np.zeros(3, dtype=float),
                 delta_rotvec_quest=np.zeros(3, dtype=float),
                 delta_rotvec_robot=np.zeros(3, dtype=float),
-                note="no_right_controller_pose",
+                note=f"no_{self.controller_key}_controller_pose",
             )
             return
 
         if not self.logged_first_quest_pose:
             self.get_logger().info(
-                "Received right controller pose from Quest. "
+                f"Received {self.controller_key} controller pose from Quest. "
                 f"transform_keys={sorted(transforms.keys())}, "
                 f"button_keys={sorted(buttons.keys())}"
             )
             self.logged_first_quest_pose = True
 
-        right_transform = np.asarray(transforms["r"], dtype=float)
-        raw_position = right_transform[:3, 3].copy()
-        raw_rotation = self._orthonormalize(right_transform[:3, :3])
+        controller_transform = np.asarray(transforms[self.controller_key], dtype=float)
+        raw_position = controller_transform[:3, 3].copy()
+        raw_rotation = self._orthonormalize(controller_transform[:3, :3])
         self._publish_raw_pose(stamp, raw_position, raw_rotation)
 
         enabled = self._is_enabled(buttons)
@@ -477,7 +544,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
     def _log_missing_quest(self, now: float) -> None:
         if now - self.last_missing_quest_log > 3.0:
             self.get_logger().warn(
-                "No right controller pose received from Quest yet. "
+                f"No {self.controller_key} controller pose received from Quest yet. "
                 f"diagnostics={self._reader_diagnostics(now)}"
             )
             self.last_missing_quest_log = now
@@ -488,6 +555,25 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 "No Franka current pose received yet; waiting before sending impedance targets."
             )
             self.last_missing_robot_pose_log = now
+
+    def _read_raw_quest_data(self, now: float) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+        if self.input_mode == "reader":
+            return self.reader.get_transformations_and_buttons()
+
+        transforms: dict[str, np.ndarray] = {}
+        pose_is_fresh = (
+            self.topic_hand_position is not None
+            and self.topic_hand_rotation is not None
+            and self.last_topic_pose_time is not None
+            and now - self.last_topic_pose_time <= self.topic_pose_timeout
+        )
+        if pose_is_fresh:
+            transform = np.eye(4, dtype=float)
+            transform[:3, :3] = self.topic_hand_rotation
+            transform[:3, 3] = self.topic_hand_position
+            transforms[self.controller_key] = transform
+
+        return transforms, dict(self.topic_buttons)
 
     def _create_reader(self) -> Any:
         self.reader_start_time = time.monotonic()
@@ -509,6 +595,8 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self.get_logger().warn(f"Failed while stopping OculusReader: {exc!r}")
 
     def _restart_reader_if_stale(self, now: float) -> None:
+        if self.input_mode != "reader":
+            return
         if self.reader_restart_timeout <= 0.0:
             return
 
@@ -547,6 +635,8 @@ class SimpleQuestImpedanceTeleopNode(Node):
         return max(now - self.last_quest_pose_time, 0.0)
 
     def _reader_thread_alive(self) -> bool | None:
+        if self.reader is None:
+            return None
         thread = getattr(self.reader, "thread", None)
         if thread is None:
             return None
@@ -554,15 +644,21 @@ class SimpleQuestImpedanceTeleopNode(Node):
 
     def _reader_diagnostics(self, now: float) -> dict[str, Any]:
         return {
+            "input_mode": self.input_mode,
+            "controller_key": self.controller_key,
             "raw_transform_keys": self.last_raw_transform_keys,
             "raw_button_keys": self.last_raw_button_keys,
             "cached_transform_keys": sorted(self.last_valid_transforms.keys()),
             "cached_button_keys": sorted(self.last_valid_buttons.keys()),
             "using_cached_pose": self.using_cached_quest_pose,
             "last_valid_pose_age_sec": self._quest_pose_age(now),
-            "reader_running": bool(getattr(self.reader, "running", False)),
+            "reader_running": bool(getattr(self.reader, "running", False)) if self.reader is not None else None,
             "reader_thread_alive": self._reader_thread_alive(),
             "reader_restart_count": self.reader_restart_count,
+            "topic_pose_age_sec": None
+            if self.last_topic_pose_time is None
+            else max(now - self.last_topic_pose_time, 0.0),
+            "topic_pose_timeout_sec": self.topic_pose_timeout,
             "quest_pose_grace_period_sec": self.quest_pose_grace_period,
             "reader_restart_timeout_sec": self.reader_restart_timeout,
         }
