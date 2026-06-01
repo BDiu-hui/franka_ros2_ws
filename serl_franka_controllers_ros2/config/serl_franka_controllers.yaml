@@ -100,6 +100,17 @@
       max_linear_velocity: 0.02
       max_angular_velocity: 0.2
 
+  serl_franka_http_server:
+    ros__parameters:
+      lower_torque_thresholds_nominal: [40.0, 40.0, 35.0, 35.0, 30.0, 25.0, 20.0]
+      upper_torque_thresholds_nominal: [55.0, 55.0, 50.0, 50.0, 45.0, 40.0, 35.0]
+      lower_torque_thresholds_acceleration: [40.0, 40.0, 35.0, 35.0, 30.0, 25.0, 20.0]
+      upper_torque_thresholds_acceleration: [55.0, 55.0, 50.0, 50.0, 45.0, 40.0, 35.0]
+      lower_force_thresholds_nominal: [45.0, 45.0, 45.0, 35.0, 35.0, 35.0]
+      upper_force_thresholds_nominal: [60.0, 60.0, 60.0, 50.0, 50.0, 50.0]
+      lower_force_thresholds_acceleration: [45.0, 45.0, 45.0, 35.0, 35.0, 35.0]
+      upper_force_thresholds_acceleration: [60.0, 60.0, 60.0, 50.0, 50.0, 50.0]
+
   fr3_arm_controller:
     ros__parameters:
       command_interfaces:
