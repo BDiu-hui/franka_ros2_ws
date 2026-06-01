@@ -1,0 +1,29 @@
+quest3_data_recorder:
+  ros__parameters:
+    out_data_dir: /tmp/quest3_recordings
+    recording_rate_hz: 30.0
+    max_episode_sec: 600.0
+
+    buttons_topic: /quest3/buttons
+    start_button_analog: leftTrig
+    stop_button_analog: rightTrig
+    trigger_threshold: 0.5
+
+    require_cameras: true
+    image_width: 640
+    image_height: 480
+    image_fps: 30
+    camera_names: ["back", "front"]
+    camera_serials: ["419122270393", "419122270479"]
+
+    arm_names: ["left", "right"]
+
+    left:
+      cmd_topic: /left/cartesian_impedance_controller/equilibrium_pose
+      current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
+      gripper_joint_states_topic: /left/franka_gripper/joint_states
+
+    right:
+      cmd_topic: /right/cartesian_impedance_controller/equilibrium_pose
+      current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
+      gripper_joint_states_topic: /right/franka_gripper/joint_states

@@ -31,6 +31,7 @@ setup(
             "teleop_realtime_plot_node = quest3_oculus_rviz.teleop_realtime_plot_node:main",
             "simple_quest_impedance_teleop_node = "
             "quest3_oculus_rviz.simple_quest_impedance_teleop_node:main",
+            "data_recorder_node = quest3_oculus_rviz.data_recorder_node:main",
         ],
     },
 )
