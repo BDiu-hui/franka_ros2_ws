@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import rclpy
+from franka_msgs.msg import FrankaRobotState
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -35,6 +36,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.declare_parameter(
             "target_pose_topic",
             "/cartesian_impedance_controller/equilibrium_pose",
+        )
+        self.declare_parameter(
+            "franka_state_topic",
+            "/franka_robot_state_broadcaster/robot_state",
         )
         self.declare_parameter(
             "raw_pose_topic",
@@ -68,6 +73,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.declare_parameter("workspace_max", [0.80, 0.45, 0.75])
         self.declare_parameter("translation_sign", [1.0, 1.0, 1.0])
         self.declare_parameter("rotation_sign", [1.0, 1.0, 1.0])
+        self.declare_parameter("rotation_xz_correction_deg", 0.0)
+        self.declare_parameter("rotation_calibration_logging", False)
+        self.declare_parameter("rotation_calibration_log_interval_sec", 0.5)
+        self.declare_parameter("rotation_calibration_min_norm_rad", 0.01)
         self.declare_parameter(
             "quest_to_robot_rotation",
             [
@@ -91,6 +100,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.base_frame = str(self.get_parameter("base_frame").value)
         self.current_pose_topic = str(self.get_parameter("current_pose_topic").value)
         self.target_pose_topic = str(self.get_parameter("target_pose_topic").value)
+        self.franka_state_topic = str(self.get_parameter("franka_state_topic").value)
         self.raw_pose_topic = str(self.get_parameter("raw_pose_topic").value)
         self.enabled_topic = str(self.get_parameter("enabled_topic").value)
         self.delta_topic = str(self.get_parameter("delta_topic").value)
@@ -119,6 +129,23 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.workspace_max = self._load_vector3_parameter("workspace_max")
         self.translation_sign = self._load_vector3_parameter("translation_sign")
         self.rotation_sign = self._load_vector3_parameter("rotation_sign")
+        self.rotation_xz_correction_deg = float(
+            self.get_parameter("rotation_xz_correction_deg").value
+        )
+        self.rotation_xz_correction = self._rotation_xz_correction_matrix(
+            math.radians(self.rotation_xz_correction_deg)
+        )
+        self.rotation_calibration_logging = bool(
+            self.get_parameter("rotation_calibration_logging").value
+        )
+        self.rotation_calibration_log_interval = max(
+            float(self.get_parameter("rotation_calibration_log_interval_sec").value),
+            0.05,
+        )
+        self.rotation_calibration_min_norm = max(
+            float(self.get_parameter("rotation_calibration_min_norm_rad").value),
+            0.0,
+        )
         (
             self.quest_to_robot_rotation,
             self.quest_to_robot_handedness,
@@ -133,6 +160,8 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.target_position = np.zeros(3, dtype=float)
         self.target_rotation = np.eye(3, dtype=float)
         self.have_current_pose = False
+        self.franka_in_error = False
+        self.last_franka_error_signature = ""
         self.teleop_enabled = False
         self.previous_hand_position: np.ndarray | None = None
         self.previous_hand_rotation: np.ndarray | None = None
@@ -156,6 +185,13 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.last_missing_robot_pose_log = 0.0
         self.logged_first_quest_pose = False
         self.warned_frame_mismatch = False
+        self.rotation_calibration_window_start = time.monotonic()
+        self.rotation_calibration_sample_count = 0
+        self.rotation_calibration_sum_quest = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_mapped = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_signed = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_corrected = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_command = np.zeros(3, dtype=float)
 
         current_pose_qos = QoSProfile(depth=10)
         current_pose_qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -164,6 +200,12 @@ class SimpleQuestImpedanceTeleopNode(Node):
             PoseStamped,
             self.current_pose_topic,
             self.current_pose_callback,
+            current_pose_qos,
+        )
+        self.franka_state_sub = self.create_subscription(
+            FrankaRobotState,
+            self.franka_state_topic,
+            self.franka_state_callback,
             current_pose_qos,
         )
         self.target_pose_pub = self.create_publisher(PoseStamped, self.target_pose_topic, 10)
@@ -202,7 +244,8 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.get_logger().info(
             "Simple Quest impedance teleop ready. "
             f"Quest={mode}, controller={self.controller_key}, "
-            f"current_pose={self.current_pose_topic}, target={self.target_pose_topic}"
+            f"current_pose={self.current_pose_topic}, target={self.target_pose_topic}, "
+            f"rotation_calibration_logging={self.rotation_calibration_logging}"
         )
 
     def destroy_node(self) -> bool:
@@ -237,6 +280,24 @@ class SimpleQuestImpedanceTeleopNode(Node):
         ]
         self.current_rotation = quaternion_matrix(quat)[:3, :3]
         self.have_current_pose = True
+
+    def franka_state_callback(self, msg: FrankaRobotState) -> None:
+        current_errors = self._active_error_names(msg.current_errors)
+        in_error = bool(current_errors) or msg.robot_mode == FrankaRobotState.ROBOT_MODE_REFLEX
+        if in_error:
+            signature = (
+                f"robot_mode={self._robot_mode_name(msg.robot_mode)}, "
+                f"current_errors={current_errors}, "
+                f"last_motion_errors={self._active_error_names(msg.last_motion_errors)}"
+            )
+            if signature != self.last_franka_error_signature:
+                self.get_logger().warn(f"Franka is in error; pausing teleop target updates: {signature}")
+                self.last_franka_error_signature = signature
+            self._set_idle_target()
+        elif self.franka_in_error:
+            self.get_logger().info("Franka error state cleared; teleop will re-anchor on next grip input.")
+            self.last_franka_error_signature = ""
+        self.franka_in_error = in_error
 
     def controller_pose_callback(self, msg: PoseStamped) -> None:
         self.topic_hand_position = np.array(
@@ -330,6 +391,21 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self._publish_raw_pose(stamp, raw_position, raw_rotation)
 
         enabled = self._is_enabled(buttons)
+        if self.franka_in_error:
+            self._publish_enabled(False)
+            self._set_idle_target()
+            self._publish_zero_delta(stamp)
+            self._publish_debug(
+                enabled=False,
+                buttons=buttons,
+                delta_world=np.zeros(3, dtype=float),
+                delta_robot=np.zeros(3, dtype=float),
+                delta_rotvec_quest=np.zeros(3, dtype=float),
+                delta_rotvec_robot=np.zeros(3, dtype=float),
+                note="franka_error_hold",
+            )
+            return
+
         self._publish_enabled(enabled)
 
         if not self.have_current_pose:
@@ -374,6 +450,8 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self.previous_hand_rotation = raw_rotation.copy()
             self.target_position = self.current_position.copy()
             self.target_rotation = self.current_rotation.copy()
+            self._reset_rotation_calibration_accumulators(now)
+            self._log_rotation_calibration_anchor()
             self._publish_target_pose(stamp)
             self._publish_zero_delta(stamp)
             self._publish_debug(
@@ -397,12 +475,13 @@ class SimpleQuestImpedanceTeleopNode(Node):
         delta_rotvec_quest = self._rotation_vector_from_matrix(delta_rotation)
         # Rotation vectors are axial vectors. If the configured axis map is
         # left-handed (det=-1), we need one extra sign flip after the map.
-        delta_rotvec_robot = (
+        delta_rotvec_robot_mapped = (
             self.quest_to_robot_handedness
             * (self.quest_to_robot_rotation @ delta_rotvec_quest)
         )
-        delta_rotvec_robot = delta_rotvec_robot * self.rotation_sign
-        delta_rotvec_robot = self._apply_deadband(delta_rotvec_robot, self.rotation_deadband)
+        delta_rotvec_robot_signed = delta_rotvec_robot_mapped * self.rotation_sign
+        delta_rotvec_robot_corrected = self.rotation_xz_correction @ delta_rotvec_robot_signed
+        delta_rotvec_robot = self._apply_deadband(delta_rotvec_robot_corrected, self.rotation_deadband)
         delta_rotvec_robot = self._limit_norm(
             delta_rotvec_robot * self.rotation_scale,
             self.max_rotation_step,
@@ -414,6 +493,15 @@ class SimpleQuestImpedanceTeleopNode(Node):
         )
         self.previous_hand_position = raw_position.copy()
         self.previous_hand_rotation = raw_rotation.copy()
+
+        self._update_rotation_calibration_log(
+            now,
+            delta_rotvec_quest,
+            delta_rotvec_robot_mapped,
+            delta_rotvec_robot_signed,
+            delta_rotvec_robot_corrected,
+            delta_rotvec_robot,
+        )
 
         self._publish_target_pose(stamp)
         self._publish_delta(stamp, delta_robot, delta_rotvec_robot)
@@ -431,6 +519,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.teleop_enabled = False
         self.previous_hand_position = None
         self.previous_hand_rotation = None
+        self._reset_rotation_calibration_accumulators(time.monotonic())
         if self.sync_target_when_idle and self.have_current_pose:
             self.target_position = self.current_position.copy()
             self.target_rotation = self.current_rotation.copy()
@@ -521,10 +610,12 @@ class SimpleQuestImpedanceTeleopNode(Node):
             "enable_threshold": self.enable_threshold,
             "translation_scale": self.translation_scale,
             "rotation_scale": self.rotation_scale,
+            "rotation_xz_correction_deg": self.rotation_xz_correction_deg,
             "translation_sign": self.translation_sign.tolist(),
             "rotation_sign": self.rotation_sign.tolist(),
             "quest_to_robot_rotation": self.quest_to_robot_rotation.reshape(-1).tolist(),
             "quest_reader": self._reader_diagnostics(time.monotonic()),
+            "franka_in_error": self.franka_in_error,
             "delta_world_m": delta_world.tolist(),
             "delta_robot_m": delta_robot.tolist(),
             "delta_rotvec_quest_rad": delta_rotvec_quest.tolist(),
@@ -540,6 +631,76 @@ class SimpleQuestImpedanceTeleopNode(Node):
         msg = String()
         msg.data = json.dumps(debug, sort_keys=True)
         self.debug_pub.publish(msg)
+
+    def _reset_rotation_calibration_accumulators(self, now: float) -> None:
+        self.rotation_calibration_window_start = now
+        self.rotation_calibration_sample_count = 0
+        self.rotation_calibration_sum_quest = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_mapped = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_signed = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_corrected = np.zeros(3, dtype=float)
+        self.rotation_calibration_sum_command = np.zeros(3, dtype=float)
+
+    def _log_rotation_calibration_anchor(self) -> None:
+        if not self.rotation_calibration_logging:
+            return
+        self.get_logger().info(
+            "ROT_CAL anchor "
+            f"controller={self.controller_key} "
+            f"rotation_scale={self.rotation_scale:.4f} "
+            f"rotation_sign={self._fmt_vector3(self.rotation_sign)} "
+            f"rotation_xz_correction_deg={self.rotation_xz_correction_deg:+.2f} "
+            f"handedness={self.quest_to_robot_handedness:+.0f} "
+            f"quest_to_robot_rotation={self.quest_to_robot_rotation.reshape(-1).tolist()}"
+        )
+
+    def _update_rotation_calibration_log(
+        self,
+        now: float,
+        delta_rotvec_quest: np.ndarray,
+        delta_rotvec_robot_mapped: np.ndarray,
+        delta_rotvec_robot_signed: np.ndarray,
+        delta_rotvec_robot_corrected: np.ndarray,
+        delta_rotvec_robot_command: np.ndarray,
+    ) -> None:
+        if not self.rotation_calibration_logging:
+            return
+
+        self.rotation_calibration_sum_quest += delta_rotvec_quest
+        self.rotation_calibration_sum_mapped += delta_rotvec_robot_mapped
+        self.rotation_calibration_sum_signed += delta_rotvec_robot_signed
+        self.rotation_calibration_sum_corrected += delta_rotvec_robot_corrected
+        self.rotation_calibration_sum_command += delta_rotvec_robot_command
+        self.rotation_calibration_sample_count += 1
+
+        elapsed = max(now - self.rotation_calibration_window_start, 0.0)
+        if elapsed < self.rotation_calibration_log_interval:
+            return
+
+        quest_norm = float(np.linalg.norm(self.rotation_calibration_sum_quest))
+        command_norm = float(np.linalg.norm(self.rotation_calibration_sum_command))
+        if quest_norm < self.rotation_calibration_min_norm and command_norm < self.rotation_calibration_min_norm:
+            self._reset_rotation_calibration_accumulators(now)
+            return
+
+        current_rpy = self._matrix_to_rpy_xyz(self.current_rotation)
+        target_rpy = self._matrix_to_rpy_xyz(self.target_rotation)
+        self.get_logger().info(
+            "ROT_CAL window "
+            f"controller={self.controller_key} "
+            f"duration_sec={elapsed:.3f} "
+            f"samples={self.rotation_calibration_sample_count} "
+            f"quest_sum_rad={self._fmt_vector3(self.rotation_calibration_sum_quest)} "
+            f"mapped_no_sign_rad={self._fmt_vector3(self.rotation_calibration_sum_mapped)} "
+            f"signed_no_scale_rad={self._fmt_vector3(self.rotation_calibration_sum_signed)} "
+            f"corrected_no_scale_rad={self._fmt_vector3(self.rotation_calibration_sum_corrected)} "
+            f"tcp_command_sum_rad={self._fmt_vector3(self.rotation_calibration_sum_command)} "
+            f"dominant_quest={self._dominant_axis(self.rotation_calibration_sum_quest)} "
+            f"dominant_tcp_command={self._dominant_axis(self.rotation_calibration_sum_command)} "
+            f"current_tcp_rpy_rad={self._fmt_vector3(current_rpy)} "
+            f"target_tcp_rpy_rad={self._fmt_vector3(target_rpy)}"
+        )
+        self._reset_rotation_calibration_accumulators(now)
 
     def _log_missing_quest(self, now: float) -> None:
         if now - self.last_missing_quest_log > 3.0:
@@ -731,6 +892,57 @@ class SimpleQuestImpedanceTeleopNode(Node):
         return value
 
     @staticmethod
+    def _active_error_names(errors: Any) -> list[str]:
+        return [
+            name
+            for name in errors.get_fields_and_field_types().keys()
+            if bool(getattr(errors, name))
+        ]
+
+    @staticmethod
+    def _dominant_axis(vector: np.ndarray) -> str:
+        axes = ("rx", "ry", "rz")
+        if vector.size != 3:
+            return "none"
+        index = int(np.argmax(np.abs(vector)))
+        value = float(vector[index])
+        if abs(value) < 1e-9:
+            return "none"
+        return f"{'+' if value >= 0.0 else '-'}{axes[index]}({value:+.5f})"
+
+    @staticmethod
+    def _fmt_vector3(vector: np.ndarray | list[float] | tuple[float, float, float]) -> str:
+        values = [float(value) for value in vector]
+        return "[" + ", ".join(f"{value:+.5f}" for value in values[:3]) + "]"
+
+    @staticmethod
+    def _matrix_to_rpy_xyz(rotation: np.ndarray) -> np.ndarray:
+        sy = math.sqrt(rotation[0, 0] * rotation[0, 0] + rotation[1, 0] * rotation[1, 0])
+        singular = sy < 1e-9
+        if not singular:
+            roll = math.atan2(rotation[2, 1], rotation[2, 2])
+            pitch = math.atan2(-rotation[2, 0], sy)
+            yaw = math.atan2(rotation[1, 0], rotation[0, 0])
+        else:
+            roll = math.atan2(-rotation[1, 2], rotation[1, 1])
+            pitch = math.atan2(-rotation[2, 0], sy)
+            yaw = 0.0
+        return np.array([roll, pitch, yaw], dtype=float)
+
+    @staticmethod
+    def _robot_mode_name(robot_mode: int) -> str:
+        names = {
+            FrankaRobotState.ROBOT_MODE_OTHER: "OTHER",
+            FrankaRobotState.ROBOT_MODE_IDLE: "IDLE",
+            FrankaRobotState.ROBOT_MODE_MOVE: "MOVE",
+            FrankaRobotState.ROBOT_MODE_GUIDING: "GUIDING",
+            FrankaRobotState.ROBOT_MODE_REFLEX: "REFLEX",
+            FrankaRobotState.ROBOT_MODE_USER_STOPPED: "USER_STOPPED",
+            FrankaRobotState.ROBOT_MODE_AUTOMATIC_ERROR_RECOVERY: "AUTOMATIC_ERROR_RECOVERY",
+        }
+        return names.get(robot_mode, f"UNKNOWN({robot_mode})")
+
+    @staticmethod
     def _apply_deadband(vector: np.ndarray, threshold: float) -> np.ndarray:
         if threshold <= 0.0:
             return vector
@@ -783,6 +995,19 @@ class SimpleQuestImpedanceTeleopNode(Node):
             dtype=float,
         )
         return np.eye(3, dtype=float) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
+
+    @staticmethod
+    def _rotation_xz_correction_matrix(angle_rad: float) -> np.ndarray:
+        c = math.cos(angle_rad)
+        s = math.sin(angle_rad)
+        return np.array(
+            [
+                [c, 0.0, -s],
+                [0.0, 1.0, 0.0],
+                [s, 0.0, c],
+            ],
+            dtype=float,
+        )
 
     @staticmethod
     def _orthonormalize(rotation: np.ndarray) -> np.ndarray:

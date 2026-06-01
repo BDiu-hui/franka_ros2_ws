@@ -1,8 +1,10 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -24,6 +26,8 @@ def generate_launch_description():
     auto_clear_error = LaunchConfiguration("auto_clear_error")
     auto_start_impedance = LaunchConfiguration("auto_start_impedance")
     auto_start_delay_sec = LaunchConfiguration("auto_start_delay_sec")
+    auto_recover_after_reflex = LaunchConfiguration("auto_recover_after_reflex")
+    recovery_watchdog_cooldown_sec = LaunchConfiguration("recovery_watchdog_cooldown_sec")
     pose_fallback_to_ik = LaunchConfiguration("pose_fallback_to_ik")
     pose_auto_activate_impedance = LaunchConfiguration("pose_auto_activate_impedance")
     pose_ik_timeout_sec = LaunchConfiguration("pose_ik_timeout_sec")
@@ -123,6 +127,16 @@ def generate_launch_description():
                 default_value="3.0",
                 description="Delay before automatic error recovery or impedance activation",
             ),
+            DeclareLaunchArgument(
+                "auto_recover_after_reflex",
+                default_value="false",
+                description="Whether to clear Franka reflex errors and restart impedance automatically",
+            ),
+            DeclareLaunchArgument(
+                "recovery_watchdog_cooldown_sec",
+                default_value="4.0",
+                description="Minimum seconds between automatic reflex recovery attempts",
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution(
@@ -214,6 +228,30 @@ def generate_launch_description():
                         "pose_fallback_goal_tolerance": pose_fallback_goal_tolerance,
                     }
                 ],
+            ),
+            Node(
+                package="serl_franka_controllers_ros2",
+                executable="franka_error_recovery_watchdog.py",
+                namespace=namespace,
+                output="screen",
+                parameters=[
+                    {
+                        "enabled": ParameterValue(auto_recover_after_reflex, value_type=bool),
+                        "controller_manager": controller_manager,
+                        "error_recovery_action": "action_server/error_recovery",
+                        "franka_state_topic": "franka_robot_state_broadcaster/robot_state",
+                        "impedance_controller": "cartesian_impedance_controller",
+                        "deactivate_controllers_on_restart": [
+                            "cartesian_pose_command_controller",
+                            "joint_position_controller",
+                            "fr3_arm_controller",
+                        ],
+                        "deactivate_before_recovery": True,
+                        "restart_impedance_after_recovery": True,
+                        "cooldown_sec": ParameterValue(recovery_watchdog_cooldown_sec, value_type=float),
+                    }
+                ],
+                condition=IfCondition(auto_recover_after_reflex),
             ),
         ]
     )
