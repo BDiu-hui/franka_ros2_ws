@@ -186,6 +186,7 @@ def generate_launch_description():
                 namespace=namespace,
                 output="screen",
                 parameters=[
+                    controllers_yaml,
                     {
                         "host": server_host,
                         "port": server_port,
