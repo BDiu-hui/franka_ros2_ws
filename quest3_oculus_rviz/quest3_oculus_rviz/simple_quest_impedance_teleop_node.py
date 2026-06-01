@@ -42,6 +42,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
             "/franka_robot_state_broadcaster/robot_state",
         )
         self.declare_parameter(
+            "recovery_status_topic",
+            "/franka_error_recovery_watchdog/recovering",
+        )
+        self.declare_parameter(
             "raw_pose_topic",
             "/quest3/right_controller/raw_pose",
         )
@@ -73,10 +77,17 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.declare_parameter("workspace_max", [0.80, 0.45, 0.75])
         self.declare_parameter("translation_sign", [1.0, 1.0, 1.0])
         self.declare_parameter("rotation_sign", [1.0, 1.0, 1.0])
-        self.declare_parameter("rotation_xz_correction_deg", 0.0)
         self.declare_parameter("rotation_calibration_logging", False)
         self.declare_parameter("rotation_calibration_log_interval_sec", 0.5)
         self.declare_parameter("rotation_calibration_min_norm_rad", 0.01)
+        self.declare_parameter(
+            "translation_quest_to_robot_rotation",
+            [
+                0.0, 0.0, 1.0,
+                -1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+            ],
+        )
         self.declare_parameter(
             "quest_to_robot_rotation",
             [
@@ -101,6 +112,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.current_pose_topic = str(self.get_parameter("current_pose_topic").value)
         self.target_pose_topic = str(self.get_parameter("target_pose_topic").value)
         self.franka_state_topic = str(self.get_parameter("franka_state_topic").value)
+        self.recovery_status_topic = str(self.get_parameter("recovery_status_topic").value)
         self.raw_pose_topic = str(self.get_parameter("raw_pose_topic").value)
         self.enabled_topic = str(self.get_parameter("enabled_topic").value)
         self.delta_topic = str(self.get_parameter("delta_topic").value)
@@ -129,11 +141,12 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.workspace_max = self._load_vector3_parameter("workspace_max")
         self.translation_sign = self._load_vector3_parameter("translation_sign")
         self.rotation_sign = self._load_vector3_parameter("rotation_sign")
-        self.rotation_xz_correction_deg = float(
-            self.get_parameter("rotation_xz_correction_deg").value
-        )
-        self.rotation_xz_correction = self._rotation_xz_correction_matrix(
-            math.radians(self.rotation_xz_correction_deg)
+        (
+            self.translation_quest_to_robot_rotation,
+            _,
+        ) = self._load_axis_map_parameter(
+            "translation_quest_to_robot_rotation",
+            warn_left_handed=False,
         )
         self.rotation_calibration_logging = bool(
             self.get_parameter("rotation_calibration_logging").value
@@ -161,6 +174,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.target_rotation = np.eye(3, dtype=float)
         self.have_current_pose = False
         self.franka_in_error = False
+        self.recovery_active = False
         self.last_franka_error_signature = ""
         self.teleop_enabled = False
         self.previous_hand_position: np.ndarray | None = None
@@ -190,7 +204,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.rotation_calibration_sum_quest = np.zeros(3, dtype=float)
         self.rotation_calibration_sum_mapped = np.zeros(3, dtype=float)
         self.rotation_calibration_sum_signed = np.zeros(3, dtype=float)
-        self.rotation_calibration_sum_corrected = np.zeros(3, dtype=float)
         self.rotation_calibration_sum_command = np.zeros(3, dtype=float)
 
         current_pose_qos = QoSProfile(depth=10)
@@ -207,6 +220,12 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self.franka_state_topic,
             self.franka_state_callback,
             current_pose_qos,
+        )
+        self.recovery_status_sub = self.create_subscription(
+            Bool,
+            self.recovery_status_topic,
+            self.recovery_status_callback,
+            10,
         )
         self.target_pose_pub = self.create_publisher(PoseStamped, self.target_pose_topic, 10)
         self.raw_pose_pub = self.create_publisher(PoseStamped, self.raw_pose_topic, 10)
@@ -245,6 +264,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             "Simple Quest impedance teleop ready. "
             f"Quest={mode}, controller={self.controller_key}, "
             f"current_pose={self.current_pose_topic}, target={self.target_pose_topic}, "
+            f"recovery_status={self.recovery_status_topic}, "
             f"rotation_calibration_logging={self.rotation_calibration_logging}"
         )
 
@@ -298,6 +318,22 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self.get_logger().info("Franka error state cleared; teleop will re-anchor on next grip input.")
             self.last_franka_error_signature = ""
         self.franka_in_error = in_error
+
+    def recovery_status_callback(self, msg: Bool) -> None:
+        if msg.data:
+            if not self.recovery_active:
+                self.get_logger().warn(
+                    "Franka recovery watchdog is active; pausing teleop target updates."
+                )
+            self.recovery_active = True
+            self._set_idle_target()
+            return
+
+        if self.recovery_active:
+            self.get_logger().info(
+                "Franka recovery watchdog finished; teleop will re-anchor on next grip input."
+            )
+        self.recovery_active = False
 
     def controller_pose_callback(self, msg: PoseStamped) -> None:
         self.topic_hand_position = np.array(
@@ -391,7 +427,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self._publish_raw_pose(stamp, raw_position, raw_rotation)
 
         enabled = self._is_enabled(buttons)
-        if self.franka_in_error:
+        if self.franka_in_error or self.recovery_active:
             self._publish_enabled(False)
             self._set_idle_target()
             self._publish_zero_delta(stamp)
@@ -402,7 +438,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 delta_robot=np.zeros(3, dtype=float),
                 delta_rotvec_quest=np.zeros(3, dtype=float),
                 delta_rotvec_robot=np.zeros(3, dtype=float),
-                note="franka_error_hold",
+                note="franka_recovery_hold" if self.recovery_active else "franka_error_hold",
             )
             return
 
@@ -466,7 +502,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             return
 
         delta_world = raw_position - self.previous_hand_position
-        delta_robot = self.quest_to_robot_rotation @ delta_world
+        delta_robot = self.translation_quest_to_robot_rotation @ delta_world
         delta_robot = delta_robot * self.translation_sign
         delta_robot = self._apply_deadband(delta_robot, self.translation_deadband)
         delta_robot = self._limit_norm(delta_robot * self.translation_scale, self.max_translation_step)
@@ -480,8 +516,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             * (self.quest_to_robot_rotation @ delta_rotvec_quest)
         )
         delta_rotvec_robot_signed = delta_rotvec_robot_mapped * self.rotation_sign
-        delta_rotvec_robot_corrected = self.rotation_xz_correction @ delta_rotvec_robot_signed
-        delta_rotvec_robot = self._apply_deadband(delta_rotvec_robot_corrected, self.rotation_deadband)
+        delta_rotvec_robot = self._apply_deadband(delta_rotvec_robot_signed, self.rotation_deadband)
         delta_rotvec_robot = self._limit_norm(
             delta_rotvec_robot * self.rotation_scale,
             self.max_rotation_step,
@@ -499,7 +534,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
             delta_rotvec_quest,
             delta_rotvec_robot_mapped,
             delta_rotvec_robot_signed,
-            delta_rotvec_robot_corrected,
             delta_rotvec_robot,
         )
 
@@ -610,12 +644,13 @@ class SimpleQuestImpedanceTeleopNode(Node):
             "enable_threshold": self.enable_threshold,
             "translation_scale": self.translation_scale,
             "rotation_scale": self.rotation_scale,
-            "rotation_xz_correction_deg": self.rotation_xz_correction_deg,
             "translation_sign": self.translation_sign.tolist(),
             "rotation_sign": self.rotation_sign.tolist(),
+            "translation_quest_to_robot_rotation": self.translation_quest_to_robot_rotation.reshape(-1).tolist(),
             "quest_to_robot_rotation": self.quest_to_robot_rotation.reshape(-1).tolist(),
             "quest_reader": self._reader_diagnostics(time.monotonic()),
             "franka_in_error": self.franka_in_error,
+            "recovery_active": self.recovery_active,
             "delta_world_m": delta_world.tolist(),
             "delta_robot_m": delta_robot.tolist(),
             "delta_rotvec_quest_rad": delta_rotvec_quest.tolist(),
@@ -638,7 +673,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.rotation_calibration_sum_quest = np.zeros(3, dtype=float)
         self.rotation_calibration_sum_mapped = np.zeros(3, dtype=float)
         self.rotation_calibration_sum_signed = np.zeros(3, dtype=float)
-        self.rotation_calibration_sum_corrected = np.zeros(3, dtype=float)
         self.rotation_calibration_sum_command = np.zeros(3, dtype=float)
 
     def _log_rotation_calibration_anchor(self) -> None:
@@ -649,7 +683,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
             f"controller={self.controller_key} "
             f"rotation_scale={self.rotation_scale:.4f} "
             f"rotation_sign={self._fmt_vector3(self.rotation_sign)} "
-            f"rotation_xz_correction_deg={self.rotation_xz_correction_deg:+.2f} "
             f"handedness={self.quest_to_robot_handedness:+.0f} "
             f"quest_to_robot_rotation={self.quest_to_robot_rotation.reshape(-1).tolist()}"
         )
@@ -660,7 +693,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
         delta_rotvec_quest: np.ndarray,
         delta_rotvec_robot_mapped: np.ndarray,
         delta_rotvec_robot_signed: np.ndarray,
-        delta_rotvec_robot_corrected: np.ndarray,
         delta_rotvec_robot_command: np.ndarray,
     ) -> None:
         if not self.rotation_calibration_logging:
@@ -669,7 +701,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.rotation_calibration_sum_quest += delta_rotvec_quest
         self.rotation_calibration_sum_mapped += delta_rotvec_robot_mapped
         self.rotation_calibration_sum_signed += delta_rotvec_robot_signed
-        self.rotation_calibration_sum_corrected += delta_rotvec_robot_corrected
         self.rotation_calibration_sum_command += delta_rotvec_robot_command
         self.rotation_calibration_sample_count += 1
 
@@ -693,7 +724,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
             f"quest_sum_rad={self._fmt_vector3(self.rotation_calibration_sum_quest)} "
             f"mapped_no_sign_rad={self._fmt_vector3(self.rotation_calibration_sum_mapped)} "
             f"signed_no_scale_rad={self._fmt_vector3(self.rotation_calibration_sum_signed)} "
-            f"corrected_no_scale_rad={self._fmt_vector3(self.rotation_calibration_sum_corrected)} "
             f"tcp_command_sum_rad={self._fmt_vector3(self.rotation_calibration_sum_command)} "
             f"dominant_quest={self._dominant_axis(self.rotation_calibration_sum_quest)} "
             f"dominant_tcp_command={self._dominant_axis(self.rotation_calibration_sum_command)} "
@@ -830,7 +860,12 @@ class SimpleQuestImpedanceTeleopNode(Node):
             raise ValueError(f"{name} must contain exactly 3 values")
         return np.array(values, dtype=float)
 
-    def _load_axis_map_parameter(self, name: str) -> tuple[np.ndarray, float]:
+    def _load_axis_map_parameter(
+        self,
+        name: str,
+        *,
+        warn_left_handed: bool = True,
+    ) -> tuple[np.ndarray, float]:
         values = list(self.get_parameter(name).value)
         if len(values) != 9:
             raise ValueError(f"{name} must contain exactly 9 values")
@@ -843,11 +878,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
             raise ValueError(f"{name} must have determinant +/-1")
 
         handedness = 1.0 if determinant >= 0.0 else -1.0
-        if handedness < 0.0:
+        if warn_left_handed and handedness < 0.0:
             self.get_logger().warn(
                 f"{name} is left-handed (det=-1). "
-                "This is allowed; translation uses the matrix directly and "
-                "rotation deltas get an extra sign correction."
+                "This is allowed; rotation deltas get an extra sign correction."
             )
         return matrix, handedness
 
@@ -995,19 +1029,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
             dtype=float,
         )
         return np.eye(3, dtype=float) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
-
-    @staticmethod
-    def _rotation_xz_correction_matrix(angle_rad: float) -> np.ndarray:
-        c = math.cos(angle_rad)
-        s = math.sin(angle_rad)
-        return np.array(
-            [
-                [c, 0.0, -s],
-                [0.0, 1.0, 0.0],
-                [s, 0.0, c],
-            ],
-            dtype=float,
-        )
 
     @staticmethod
     def _orthonormalize(rotation: np.ndarray) -> np.ndarray:

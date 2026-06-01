@@ -1,7 +1,9 @@
 #!/usr/bin/python3
 
+import os
 import threading
 import time
+from pathlib import Path
 from typing import List
 
 import rclpy
@@ -16,6 +18,7 @@ from controller_manager_msgs.srv import SwitchController
 from franka_msgs.action import ErrorRecovery
 from franka_msgs.msg import FrankaRobotState
 from rcl_interfaces.msg import Log
+from std_msgs.msg import Bool
 
 
 class FrankaErrorRecoveryWatchdog(Node):
@@ -28,6 +31,7 @@ class FrankaErrorRecoveryWatchdog(Node):
         self.declare_parameter("controller_manager", "controller_manager")
         self.declare_parameter("error_recovery_action", "action_server/error_recovery")
         self.declare_parameter("franka_state_topic", "franka_robot_state_broadcaster/robot_state")
+        self.declare_parameter("recovering_topic", "franka_error_recovery_watchdog/recovering")
         self.declare_parameter("impedance_controller", "cartesian_impedance_controller")
         self.declare_parameter(
             "deactivate_controllers_on_restart",
@@ -48,11 +52,16 @@ class FrankaErrorRecoveryWatchdog(Node):
         self.declare_parameter("recovery_retry_count", 3)
         self.declare_parameter("recovery_retry_interval_sec", 1.0)
         self.declare_parameter("controller_switch_timeout_sec", 5.0)
+        self.declare_parameter("log_file_polling_enabled", True)
+        self.declare_parameter("log_file_poll_interval_sec", 0.2)
+        self.declare_parameter("log_file_max_age_sec", 120.0)
+        self.declare_parameter("log_file_glob", "ros2_control_node_*.log")
 
         self.enabled = bool(self.get_parameter("enabled").value)
         self.controller_manager = str(self.get_parameter("controller_manager").value).strip()
         self.error_recovery_action = str(self.get_parameter("error_recovery_action").value)
         self.franka_state_topic = str(self.get_parameter("franka_state_topic").value)
+        self.recovering_topic = str(self.get_parameter("recovering_topic").value)
         self.impedance_controller = str(self.get_parameter("impedance_controller").value)
         self.deactivate_before_recovery = bool(self.get_parameter("deactivate_before_recovery").value)
         self.restart_impedance_after_recovery = bool(
@@ -77,6 +86,16 @@ class FrankaErrorRecoveryWatchdog(Node):
             0.1,
             float(self.get_parameter("controller_switch_timeout_sec").value),
         )
+        self.log_file_polling_enabled = bool(self.get_parameter("log_file_polling_enabled").value)
+        self.log_file_poll_interval_sec = max(
+            0.05,
+            float(self.get_parameter("log_file_poll_interval_sec").value),
+        )
+        self.log_file_max_age_sec = max(
+            1.0,
+            float(self.get_parameter("log_file_max_age_sec").value),
+        )
+        self.log_file_glob = str(self.get_parameter("log_file_glob").value)
 
         switch_service = (
             f"{self.controller_manager.rstrip('/')}/switch_controller"
@@ -85,11 +104,12 @@ class FrankaErrorRecoveryWatchdog(Node):
         )
         self.error_recovery_client = ActionClient(self, ErrorRecovery, self.error_recovery_action)
         self.switch_controller_client = self.create_client(SwitchController, switch_service)
+        self.recovering_pub = self.create_publisher(Bool, self.recovering_topic, 10)
 
         qos = QoSProfile(
             depth=100,
             reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.create_subscription(Log, "/rosout", self._rosout_callback, qos)
         self.create_subscription(
@@ -103,12 +123,19 @@ class FrankaErrorRecoveryWatchdog(Node):
         self._recovery_running = False
         self._last_recovery_start = 0.0
         self._last_state_error_signature = ""
+        self._start_wall_time = time.time()
+        self._log_file_offsets: dict[Path, int] = {}
+        self._log_file_dir = self._resolve_log_file_dir()
+        if self.log_file_polling_enabled:
+            self.create_timer(self.log_file_poll_interval_sec, self._poll_ros2_control_logs)
+        self._publish_recovering(False)
 
         self.get_logger().info(
             "Franka error recovery watchdog ready. "
             f"enabled={self.enabled}, action={self.error_recovery_action}, "
             f"state_topic={self.franka_state_topic}, switch_service={switch_service}, "
-            f"restart_impedance={self.restart_impedance_after_recovery}"
+            f"restart_impedance={self.restart_impedance_after_recovery}, "
+            f"log_polling={self.log_file_polling_enabled}, log_dir={self._log_file_dir}"
         )
 
     def _rosout_callback(self, msg: Log) -> None:
@@ -116,12 +143,48 @@ class FrankaErrorRecoveryWatchdog(Node):
             return
         if msg.name == self.get_logger().name:
             return
+        stamp_sec = float(msg.stamp.sec) + float(msg.stamp.nanosec) * 1e-9
+        if stamp_sec > 0.0 and stamp_sec < self._start_wall_time - 5.0:
+            return
 
         text = f"{msg.name}: {msg.msg}"
         if not any(pattern in text for pattern in self.trigger_patterns):
             return
 
         self._request_recovery("rosout", text)
+
+    def _poll_ros2_control_logs(self) -> None:
+        if not self.enabled:
+            return
+        now = time.time()
+        for path in self._recent_log_files(now):
+            try:
+                self._poll_one_log_file(path)
+            except OSError as exc:
+                self.get_logger().warn(f"Could not read ROS control log file {path}: {exc}")
+
+    def _poll_one_log_file(self, path: Path) -> None:
+        size = path.stat().st_size
+        offset = self._log_file_offsets.get(path)
+        if offset is None:
+            offset = 0 if path.stat().st_mtime >= self._start_wall_time - 2.0 else size
+        if size < offset:
+            offset = 0
+        if size == offset:
+            self._log_file_offsets[path] = offset
+            return
+
+        with path.open("r", encoding="utf-8", errors="replace") as log_file:
+            log_file.seek(offset)
+            while True:
+                line = log_file.readline()
+                if not line:
+                    break
+                text = line.strip()
+                if any(pattern in text for pattern in self.trigger_patterns):
+                    self._request_recovery("log_file", text)
+                    break
+            self._log_file_offsets[path] = log_file.tell()
 
     def _franka_state_callback(self, msg: FrankaRobotState) -> None:
         if not self.enabled:
@@ -166,6 +229,7 @@ class FrankaErrorRecoveryWatchdog(Node):
                 "Detected Franka reflex/error; starting automatic recovery. "
                 f"source={source}, trigger='{trigger_text[:240]}'"
             )
+            self._publish_recovering(True)
             if self.pre_recovery_delay_sec > 0.0:
                 time.sleep(self.pre_recovery_delay_sec)
 
@@ -183,6 +247,7 @@ class FrankaErrorRecoveryWatchdog(Node):
         except Exception as exc:  # pylint: disable=broad-except
             self.get_logger().error(f"Automatic Franka recovery failed: {exc}")
         finally:
+            self._publish_recovering(False)
             with self._lock:
                 self._recovery_running = False
 
@@ -258,6 +323,36 @@ class FrankaErrorRecoveryWatchdog(Node):
             for name in self.deactivate_controllers_on_restart
             if name and name != self.impedance_controller
         ]
+
+    def _publish_recovering(self, recovering: bool) -> None:
+        msg = Bool()
+        msg.data = recovering
+        self.recovering_pub.publish(msg)
+
+    def _recent_log_files(self, now: float) -> list[Path]:
+        if not self._log_file_dir.exists():
+            return []
+        paths = []
+        for path in self._log_file_dir.glob(self.log_file_glob):
+            try:
+                if now - path.stat().st_mtime <= self.log_file_max_age_sec:
+                    paths.append(path)
+            except OSError:
+                continue
+        return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)[:4]
+
+    @staticmethod
+    def _resolve_log_file_dir() -> Path:
+        ros_log_dir = os.environ.get("ROS_LOG_DIR")
+        if ros_log_dir:
+            return Path(ros_log_dir).expanduser()
+
+        cwd_log_dir = Path.cwd() / "log" / "ros"
+        if cwd_log_dir.exists():
+            return cwd_log_dir
+
+        ros_home = Path(os.environ.get("ROS_HOME", "~/.ros")).expanduser()
+        return ros_home / "log"
 
     @staticmethod
     def _active_error_names(errors) -> List[str]:

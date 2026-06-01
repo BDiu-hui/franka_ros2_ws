@@ -117,6 +117,7 @@ class FrankaHTTPBridge(Node):
         self.declare_parameter("auto_clear_error", False)
         self.declare_parameter("auto_start_impedance", False)
         self.declare_parameter("auto_start_delay_sec", 3.0)
+        self.declare_parameter("auto_start_wait_timeout_sec", 20.0)
         self.declare_parameter("auto_start_retry_count", 5)
         self.declare_parameter("auto_start_retry_interval_sec", 2.0)
 
@@ -176,6 +177,9 @@ class FrankaHTTPBridge(Node):
         self.auto_clear_error = self.get_parameter("auto_clear_error").get_parameter_value().bool_value
         self.auto_start_impedance = self.get_parameter("auto_start_impedance").get_parameter_value().bool_value
         self.auto_start_delay_sec = self.get_parameter("auto_start_delay_sec").get_parameter_value().double_value
+        self.auto_start_wait_timeout_sec = (
+            self.get_parameter("auto_start_wait_timeout_sec").get_parameter_value().double_value
+        )
         self.auto_start_retry_count = (
             self.get_parameter("auto_start_retry_count").get_parameter_value().integer_value
         )
@@ -1046,6 +1050,7 @@ class FrankaHTTPBridge(Node):
         if not self.auto_start_impedance:
             return
 
+        self._wait_for_impedance_controller_before_auto_start()
         retry_count = max(1, self.auto_start_retry_count)
         for attempt in range(1, retry_count + 1):
             try:
@@ -1062,6 +1067,40 @@ class FrankaHTTPBridge(Node):
                     f"Automatic impedance start attempt {attempt}/{retry_count} failed: {exc}"
                 )
                 time.sleep(max(0.1, self.auto_start_retry_interval_sec))
+
+    def _wait_for_impedance_controller_before_auto_start(self) -> None:
+        timeout = max(0.0, self.auto_start_wait_timeout_sec)
+        deadline = time.time() + timeout
+        last_error = None
+        while time.time() < deadline:
+            try:
+                states = self._controller_states()
+                state = states.get(self.impedance_controller)
+                if state in ("inactive", "active"):
+                    self.get_logger().info(
+                        "Automatic impedance start found controller ready: "
+                        f"{self.impedance_controller}={state}"
+                    )
+                    return
+                if state == "unconfigured":
+                    self.get_logger().info(
+                        "Automatic impedance start is waiting for controller configuration: "
+                        f"{self.impedance_controller}=unconfigured"
+                    )
+            except Exception as exc:  # pylint: disable=broad-except
+                last_error = exc
+            time.sleep(0.2)
+
+        if last_error is not None:
+            self.get_logger().warn(
+                "Timed out waiting for controller spawner before automatic impedance start; "
+                f"continuing with internal load/configure path. Last error: {last_error}"
+            )
+        else:
+            self.get_logger().warn(
+                "Timed out waiting for controller spawner before automatic impedance start; "
+                "continuing with internal load/configure path."
+            )
 
     def _apply_default_collision_behavior_once(self) -> None:
         if not self.apply_default_collision_behavior or self.default_collision_behavior_applied:
