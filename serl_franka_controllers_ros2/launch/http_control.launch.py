@@ -124,7 +124,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "auto_start_delay_sec",
-                default_value="3.0",
+                default_value="8.0",
                 description="Delay before automatic error recovery or impedance activation",
             ),
             DeclareLaunchArgument(
@@ -134,7 +134,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "recovery_watchdog_cooldown_sec",
-                default_value="4.0",
+                default_value="1.5",
                 description="Minimum seconds between automatic reflex recovery attempts",
             ),
             IncludeLaunchDescription(
@@ -222,6 +222,7 @@ def generate_launch_description():
                         "auto_clear_error": auto_clear_error,
                         "auto_start_impedance": auto_start_impedance,
                         "auto_start_delay_sec": auto_start_delay_sec,
+                        "auto_start_wait_timeout_sec": 20.0,
                         "pose_fallback_to_ik": pose_fallback_to_ik,
                         "pose_auto_activate_impedance": pose_auto_activate_impedance,
                         "pose_ik_timeout_sec": pose_ik_timeout_sec,

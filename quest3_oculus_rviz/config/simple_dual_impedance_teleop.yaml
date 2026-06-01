@@ -11,6 +11,7 @@ left_simple_quest_impedance_teleop:
     current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
     target_pose_topic: /left/cartesian_impedance_controller/equilibrium_pose
     franka_state_topic: /left/franka_robot_state_broadcaster/robot_state
+    recovery_status_topic: /left/franka_error_recovery_watchdog/recovering
 
     raw_pose_topic: /quest3/left_controller/raw_pose
     enabled_topic: /quest3/left_impedance_teleop/enabled
@@ -21,12 +22,12 @@ left_simple_quest_impedance_teleop:
     enable_analog_name: leftGrip
     enable_threshold: 0.5
 
-    translation_scale: 0.6
-    rotation_scale: 0.6
+    translation_scale: 0.45
+    rotation_scale: 0.35
     translation_deadband_m: 0.0005
     rotation_deadband_rad: 0.003
-    max_translation_step_m: 0.01
-    max_rotation_step_rad: 0.08
+    max_translation_step_m: 0.006
+    max_rotation_step_rad: 0.04
     quest_pose_grace_period_sec: 0.25
     reader_restart_timeout_sec: 2.0
     sync_target_with_current_pose_when_idle: true
@@ -35,17 +36,23 @@ left_simple_quest_impedance_teleop:
     workspace_max: [0.80, 0.45, 0.75]
 
     translation_sign: [-1.0, 1.0, 1.0]
-    rotation_sign: [1.0, -1.0, 1.0]
-    rotation_xz_correction_deg: -40.0
+    rotation_sign: [1.0, -1.0, -1.0]
     rotation_calibration_logging: true
     rotation_calibration_log_interval_sec: 0.5
     rotation_calibration_min_norm_rad: 0.01
 
-    quest_to_robot_rotation:
+    translation_quest_to_robot_rotation:
       [
         0.0, 0.0, 1.0,
         -1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
+      ]
+
+    quest_to_robot_rotation:
+      [
+        0.0, 0.642788, 0.766044,
+        -1.0, 0.0, 0.0,
+        0.0, 0.766044, -0.642788,
       ]
 
 right_simple_quest_impedance_teleop:
@@ -61,6 +68,7 @@ right_simple_quest_impedance_teleop:
     current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
     target_pose_topic: /right/cartesian_impedance_controller/equilibrium_pose
     franka_state_topic: /right/franka_robot_state_broadcaster/robot_state
+    recovery_status_topic: /right/franka_error_recovery_watchdog/recovering
 
     raw_pose_topic: /quest3/right_controller/raw_pose
     enabled_topic: /quest3/right_impedance_teleop/enabled
@@ -71,12 +79,12 @@ right_simple_quest_impedance_teleop:
     enable_analog_name: rightGrip
     enable_threshold: 0.5
 
-    translation_scale: 0.6
-    rotation_scale: 0.6
+    translation_scale: 0.45
+    rotation_scale: 0.35
     translation_deadband_m: 0.0005
     rotation_deadband_rad: 0.003
-    max_translation_step_m: 0.01
-    max_rotation_step_rad: 0.08
+    max_translation_step_m: 0.006
+    max_rotation_step_rad: 0.04
     quest_pose_grace_period_sec: 0.25
     reader_restart_timeout_sec: 2.0
     sync_target_with_current_pose_when_idle: true
@@ -85,15 +93,21 @@ right_simple_quest_impedance_teleop:
     workspace_max: [0.80, 0.45, 0.75]
 
     translation_sign: [-1.0, 1.0, 1.0]
-    rotation_sign: [1.0, -1.0, 1.0]
-    rotation_xz_correction_deg: -40.0
+    rotation_sign: [1.0, -1.0, -1.0]
     rotation_calibration_logging: true
     rotation_calibration_log_interval_sec: 0.5
     rotation_calibration_min_norm_rad: 0.01
 
-    quest_to_robot_rotation:
+    translation_quest_to_robot_rotation:
       [
         0.0, 0.0, 1.0,
         -1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
+      ]
+
+    quest_to_robot_rotation:
+      [
+        0.0, 0.642788, 0.766044,
+        -1.0, 0.0, 0.0,
+        0.0, 0.766044, -0.642788,
       ]
