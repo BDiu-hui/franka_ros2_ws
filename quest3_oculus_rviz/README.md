@@ -56,6 +56,9 @@ ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
 curl -X POST http://127.0.0.1:5000/startimp
 ```
 
+默认 `auto_recover_after_reflex:=true`，检测到 Franka reflex / `communication_constraints_violation`
+后会自动调用 error recovery，并重新启动阻抗控制器。
+
 如果想手动启动阻抗，把 launch 参数设为 `auto_start_impedance:=false`，再自己 curl。
 
 ## 双臂阻抗摇操
@@ -79,6 +82,8 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 | --- | --- | --- |
 | left | `5000` | `leftGrip` |
 | right | `5001` | `rightGrip` |
+
+双臂 launch 同样默认 `auto_recover_after_reflex:=true`，左右臂各自监听 reflex 并自动清错。
 
 默认话题:
 

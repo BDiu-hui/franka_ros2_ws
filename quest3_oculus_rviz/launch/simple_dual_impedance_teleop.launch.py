@@ -20,6 +20,8 @@ def http_control_include(
     base_frame,
     auto_start_impedance,
     auto_start_delay_sec,
+    auto_recover_after_reflex,
+    recovery_watchdog_cooldown_sec,
 ):
     http_control_launch = PathJoinSubstitution(
         [FindPackageShare("serl_franka_controllers_ros2"), "launch", "http_control.launch.py"]
@@ -44,6 +46,8 @@ def http_control_include(
             "auto_clear_error": "false",
             "auto_start_impedance": auto_start_impedance,
             "auto_start_delay_sec": auto_start_delay_sec,
+            "auto_recover_after_reflex": auto_recover_after_reflex,
+            "recovery_watchdog_cooldown_sec": recovery_watchdog_cooldown_sec,
             "pose_fallback_to_ik": "false",
             "pose_auto_activate_impedance": "false",
             "pose_ik_timeout_sec": "5.0",
@@ -78,6 +82,8 @@ def generate_launch_description():
     base_frame = LaunchConfiguration("base_frame")
     auto_start_impedance = LaunchConfiguration("auto_start_impedance")
     auto_start_delay_sec = LaunchConfiguration("auto_start_delay_sec")
+    auto_recover_after_reflex = LaunchConfiguration("auto_recover_after_reflex")
+    recovery_watchdog_cooldown_sec = LaunchConfiguration("recovery_watchdog_cooldown_sec")
     left_server_port = LaunchConfiguration("left_server_port")
     right_server_port = LaunchConfiguration("right_server_port")
     mock = LaunchConfiguration("mock")
@@ -104,6 +110,8 @@ def generate_launch_description():
             DeclareLaunchArgument("base_frame", default_value="base"),
             DeclareLaunchArgument("auto_start_impedance", default_value="true"),
             DeclareLaunchArgument("auto_start_delay_sec", default_value="3.0"),
+            DeclareLaunchArgument("auto_recover_after_reflex", default_value="true"),
+            DeclareLaunchArgument("recovery_watchdog_cooldown_sec", default_value="4.0"),
             DeclareLaunchArgument("left_server_port", default_value="5000"),
             DeclareLaunchArgument("right_server_port", default_value="5001"),
             DeclareLaunchArgument("mock", default_value="false"),
@@ -121,6 +129,8 @@ def generate_launch_description():
                 base_frame=base_frame,
                 auto_start_impedance=auto_start_impedance,
                 auto_start_delay_sec=auto_start_delay_sec,
+                auto_recover_after_reflex=auto_recover_after_reflex,
+                recovery_watchdog_cooldown_sec=recovery_watchdog_cooldown_sec,
             ),
             http_control_include(
                 condition=start_right_arm,
@@ -133,6 +143,8 @@ def generate_launch_description():
                 base_frame=base_frame,
                 auto_start_impedance=auto_start_impedance,
                 auto_start_delay_sec=auto_start_delay_sec,
+                auto_recover_after_reflex=auto_recover_after_reflex,
+                recovery_watchdog_cooldown_sec=recovery_watchdog_cooldown_sec,
             ),
             Node(
                 package="quest3_oculus_rviz",

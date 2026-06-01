@@ -10,6 +10,7 @@ left_simple_quest_impedance_teleop:
     base_frame: base
     current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
     target_pose_topic: /left/cartesian_impedance_controller/equilibrium_pose
+    franka_state_topic: /left/franka_robot_state_broadcaster/robot_state
 
     raw_pose_topic: /quest3/left_controller/raw_pose
     enabled_topic: /quest3/left_impedance_teleop/enabled
@@ -35,6 +36,10 @@ left_simple_quest_impedance_teleop:
 
     translation_sign: [-1.0, 1.0, 1.0]
     rotation_sign: [1.0, -1.0, 1.0]
+    rotation_xz_correction_deg: -40.0
+    rotation_calibration_logging: true
+    rotation_calibration_log_interval_sec: 0.5
+    rotation_calibration_min_norm_rad: 0.01
 
     quest_to_robot_rotation:
       [
@@ -55,6 +60,7 @@ right_simple_quest_impedance_teleop:
     base_frame: base
     current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
     target_pose_topic: /right/cartesian_impedance_controller/equilibrium_pose
+    franka_state_topic: /right/franka_robot_state_broadcaster/robot_state
 
     raw_pose_topic: /quest3/right_controller/raw_pose
     enabled_topic: /quest3/right_impedance_teleop/enabled
@@ -80,6 +86,10 @@ right_simple_quest_impedance_teleop:
 
     translation_sign: [-1.0, 1.0, 1.0]
     rotation_sign: [1.0, -1.0, 1.0]
+    rotation_xz_correction_deg: -40.0
+    rotation_calibration_logging: true
+    rotation_calibration_log_interval_sec: 0.5
+    rotation_calibration_min_norm_rad: 0.01
 
     quest_to_robot_rotation:
       [

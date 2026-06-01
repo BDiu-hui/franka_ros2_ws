@@ -27,6 +27,8 @@ def generate_launch_description():
     auto_clear_error = LaunchConfiguration("auto_clear_error")
     auto_start_impedance = LaunchConfiguration("auto_start_impedance")
     auto_start_delay_sec = LaunchConfiguration("auto_start_delay_sec")
+    auto_recover_after_reflex = LaunchConfiguration("auto_recover_after_reflex")
+    recovery_watchdog_cooldown_sec = LaunchConfiguration("recovery_watchdog_cooldown_sec")
     pose_fallback_to_ik = LaunchConfiguration("pose_fallback_to_ik")
     pose_auto_activate_impedance = LaunchConfiguration("pose_auto_activate_impedance")
     pose_ik_timeout_sec = LaunchConfiguration("pose_ik_timeout_sec")
@@ -72,6 +74,12 @@ def generate_launch_description():
                 description="Automatically run the equivalent of POST /startimp after startup",
             ),
             DeclareLaunchArgument("auto_start_delay_sec", default_value="3.0"),
+            DeclareLaunchArgument(
+                "auto_recover_after_reflex",
+                default_value="true",
+                description="Automatically clear Franka reflex errors and restart impedance",
+            ),
+            DeclareLaunchArgument("recovery_watchdog_cooldown_sec", default_value="4.0"),
             DeclareLaunchArgument("pose_fallback_to_ik", default_value="false"),
             DeclareLaunchArgument("pose_auto_activate_impedance", default_value="false"),
             DeclareLaunchArgument("pose_ik_timeout_sec", default_value="5.0"),
@@ -107,6 +115,8 @@ def generate_launch_description():
                     "auto_clear_error": auto_clear_error,
                     "auto_start_impedance": auto_start_impedance,
                     "auto_start_delay_sec": auto_start_delay_sec,
+                    "auto_recover_after_reflex": auto_recover_after_reflex,
+                    "recovery_watchdog_cooldown_sec": recovery_watchdog_cooldown_sec,
                     "pose_fallback_to_ik": pose_fallback_to_ik,
                     "pose_auto_activate_impedance": pose_auto_activate_impedance,
                     "pose_ik_timeout_sec": pose_ik_timeout_sec,

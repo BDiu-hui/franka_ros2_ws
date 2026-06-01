@@ -131,7 +131,10 @@ install(
 )
 
 install(
-  PROGRAMS scripts/serl_franka_http_server.py scripts/libfranka_http_server.py
+  PROGRAMS
+    scripts/serl_franka_http_server.py
+    scripts/libfranka_http_server.py
+    scripts/franka_error_recovery_watchdog.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

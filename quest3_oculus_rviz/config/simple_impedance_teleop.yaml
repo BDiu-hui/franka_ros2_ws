@@ -12,6 +12,7 @@ simple_quest_impedance_teleop:
     base_frame: fr3_link0
     current_pose_topic: /franka_robot_state_broadcaster/current_pose
     target_pose_topic: /cartesian_impedance_controller/equilibrium_pose
+    franka_state_topic: /franka_robot_state_broadcaster/robot_state
 
     raw_pose_topic: /quest3/right_controller/raw_pose
     enabled_topic: /quest3/simple_teleop/enabled
@@ -40,6 +41,10 @@ simple_quest_impedance_teleop:
     # These are the main "Quest <-> Franka alignment" knobs.
     translation_sign: [-1.0, 1.0, 1.0]
     rotation_sign: [1.0, -1.0, 1.0]
+    rotation_xz_correction_deg: -40.0
+    rotation_calibration_logging: true
+    rotation_calibration_log_interval_sec: 0.5
+    rotation_calibration_min_norm_rad: 0.01
 
     # Initial guess based on your existing parse:
     # robot_x = quest_z, robot_y = -quest_x, robot_z = quest_y
