@@ -388,5 +388,5 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py require_cameras:=false
 - 控制真实机械臂前，确认急停、工作空间、人员位置和机器人错误状态。
 - 第一次测试双臂时建议先只启动一侧: `start_left_arm:=true start_right_arm:=false`。
 - 同一台机械臂同一时间只能有一个 FCI 控制进程。
-- 松开 grip 后 teleop 会停止累加目标，并把目标同步到当前 TCP pose，避免下次按下跳变。
+- 启动、恢复或松开 grip 进入 idle 时，teleop 只会把目标同步到当前 TCP pose 一次，之后保持该目标，避免负载下坠时连续跟随。
 - 如果出现方向不对，优先改 sign；如果整体坐标系不对，再改 `quest_to_robot_rotation`。
