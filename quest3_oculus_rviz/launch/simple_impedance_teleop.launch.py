@@ -86,7 +86,7 @@ def generate_launch_description():
             DeclareLaunchArgument("pose_fallback_goal_tolerance", default_value="0.005"),
             DeclareLaunchArgument("quest_ip_address", default_value=""),
             DeclareLaunchArgument("quest_port", default_value="5555"),
-            DeclareLaunchArgument("base_frame", default_value="base"),
+            DeclareLaunchArgument("base_frame", default_value="fr3_link0"),
             DeclareLaunchArgument(
                 "current_pose_topic",
                 default_value="/franka_robot_state_broadcaster/current_pose",
