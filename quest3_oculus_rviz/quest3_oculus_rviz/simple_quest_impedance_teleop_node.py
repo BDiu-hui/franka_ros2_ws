@@ -181,6 +181,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.franka_in_error = False
         self.recovery_active = False
         self.recovery_hold_until = 0.0
+        self.idle_target_synced = False
         self.last_franka_error_signature = ""
         self.teleop_enabled = False
         self.previous_hand_position: np.ndarray | None = None
@@ -319,10 +320,11 @@ class SimpleQuestImpedanceTeleopNode(Node):
             if signature != self.last_franka_error_signature:
                 self.get_logger().warn(f"Franka is in error; pausing teleop target updates: {signature}")
                 self.last_franka_error_signature = signature
-            self._set_idle_target()
+            self._set_idle_target(force_sync=not self.franka_in_error)
         elif self.franka_in_error:
             self.get_logger().info("Franka error state cleared; teleop will re-anchor on next grip input.")
             self.last_franka_error_signature = ""
+            self._set_idle_target(force_sync=True)
         self.franka_in_error = in_error
 
     def recovery_status_callback(self, msg: Bool) -> None:
@@ -331,8 +333,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 self.get_logger().warn(
                     "Franka recovery watchdog is active; pausing teleop target updates."
                 )
+                self._set_idle_target(force_sync=True)
+            else:
+                self._set_idle_target()
             self.recovery_active = True
-            self._set_idle_target()
             return
 
         if self.recovery_active:
@@ -340,6 +344,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 "Franka recovery watchdog finished; teleop will re-anchor on next grip input."
             )
             self._start_recovery_hold()
+            self._set_idle_target(force_sync=True)
         self.recovery_active = False
 
     def controller_pose_callback(self, msg: PoseStamped) -> None:
@@ -406,7 +411,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self._publish_zero_delta(stamp)
             self._restart_reader_if_stale(now)
             self._log_missing_quest(now)
-            self._set_idle_target()
+            idle_synced = self._set_idle_target()
             if self.have_current_pose:
                 self._publish_target_pose(stamp)
             self._publish_debug(
@@ -416,7 +421,11 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 delta_robot=np.zeros(3, dtype=float),
                 delta_rotvec_quest=np.zeros(3, dtype=float),
                 delta_rotvec_robot=np.zeros(3, dtype=float),
-                note=f"no_{self.controller_key}_controller_pose",
+                note=(
+                    f"no_{self.controller_key}_controller_pose_anchor_captured"
+                    if idle_synced
+                    else f"no_{self.controller_key}_controller_pose_idle_hold"
+                ),
             )
             return
 
@@ -470,7 +479,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             return
 
         if not enabled:
-            self._set_idle_target()
+            idle_synced = self._set_idle_target()
             self._publish_target_pose(stamp)
             self._publish_zero_delta(stamp)
             self._publish_debug(
@@ -480,7 +489,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 delta_robot=np.zeros(3, dtype=float),
                 delta_rotvec_quest=np.zeros(3, dtype=float),
                 delta_rotvec_robot=np.zeros(3, dtype=float),
-                note="idle",
+                note="idle_anchor_captured" if idle_synced else "idle_hold",
             )
             return
 
@@ -490,6 +499,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             or self.previous_hand_rotation is None
         ):
             self.teleop_enabled = True
+            self.idle_target_synced = False
             self.previous_hand_position = raw_position.copy()
             self.previous_hand_rotation = raw_rotation.copy()
             self.target_position = self.current_position.copy()
@@ -557,14 +567,25 @@ class SimpleQuestImpedanceTeleopNode(Node):
             note="running",
         )
 
-    def _set_idle_target(self) -> None:
+    def _set_idle_target(self, *, force_sync: bool = False) -> bool:
+        was_teleop_enabled = self.teleop_enabled
         self.teleop_enabled = False
         self.previous_hand_position = None
         self.previous_hand_rotation = None
         self._reset_rotation_calibration_accumulators(time.monotonic())
-        if self.sync_target_when_idle and self.have_current_pose:
+        should_sync = (
+            self.sync_target_when_idle
+            and self.have_current_pose
+            and (force_sync or was_teleop_enabled or not self.idle_target_synced)
+        )
+        if should_sync:
             self.target_position = self.current_position.copy()
             self.target_rotation = self.current_rotation.copy()
+            self.idle_target_synced = True
+            return True
+        if not self.have_current_pose:
+            self.idle_target_synced = False
+        return False
 
     def _start_recovery_hold(self) -> None:
         if self.post_recovery_hold_sec <= 0.0:
@@ -674,6 +695,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             "quest_reader": self._reader_diagnostics(time.monotonic()),
             "franka_in_error": self.franka_in_error,
             "recovery_active": self.recovery_active,
+            "idle_target_synced": self.idle_target_synced,
             "delta_world_m": delta_world.tolist(),
             "delta_robot_m": delta_robot.tolist(),
             "delta_rotvec_quest_rad": delta_rotvec_quest.tolist(),

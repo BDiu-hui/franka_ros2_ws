@@ -31,6 +31,8 @@ left_simple_quest_impedance_teleop:
     quest_pose_grace_period_sec: 0.25
     reader_restart_timeout_sec: 2.0
     post_recovery_hold_sec: 1.0
+    # On startup/recovery/grip release, capture current TCP once as the idle target.
+    # Idle then holds that target instead of continuously following current TCP.
     sync_target_with_current_pose_when_idle: true
 
     workspace_min: [0.20, -0.45, 0.08]
@@ -89,6 +91,8 @@ right_simple_quest_impedance_teleop:
     quest_pose_grace_period_sec: 0.25
     reader_restart_timeout_sec: 2.0
     post_recovery_hold_sec: 1.0
+    # On startup/recovery/grip release, capture current TCP once as the idle target.
+    # Idle then holds that target instead of continuously following current TCP.
     sync_target_with_current_pose_when_idle: true
 
     workspace_min: [0.20, -0.45, 0.08]

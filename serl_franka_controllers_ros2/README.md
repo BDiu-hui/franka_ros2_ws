@@ -53,6 +53,32 @@ source setup_env.bash
 
 同一台机械臂同一时间只能运行其中一条。多个进程同时占用 FCI 会导致连接失败、控制异常或机器人报错。
 
+## RViz 阻抗调参面板
+
+启动 ros2_control 阻抗链路和 RViz 调参面板:
+
+```bash
+source setup_env.bash
+ros2 launch serl_franka_controllers_ros2 impedance.launch.py \
+  robot_ip:=172.16.0.2 \
+  robot_type:=fr3 \
+  load_gripper:=true \
+  start_rviz:=true \
+  start_impedance_controller:=true
+```
+
+`impedance.launch.py` 默认 `start_rviz:=true` 和 `start_impedance_controller:=true`，所以也可以简写:
+
+```bash
+source setup_env.bash
+ros2 launch serl_franka_controllers_ros2 impedance.launch.py \
+  robot_ip:=172.16.0.2 \
+  robot_type:=fr3 \
+  load_gripper:=true
+```
+
+RViz 会加载 `rviz/impedance_tuning.rviz`，其中包含 `cartesian_impedance_controller` 的阻抗系数调参面板。
+
 ## ROS 2 阻抗控制 HTTP
 
 启动:
