@@ -30,10 +30,11 @@ simple_quest_impedance_teleop:
     rotation_scale: 0.35
     translation_deadband_m: 0.0005
     rotation_deadband_rad: 0.003
-    max_translation_step_m: 0.006
-    max_rotation_step_rad: 0.04
+    max_translation_step_m: 0.003
+    max_rotation_step_rad: 0.02
     quest_pose_grace_period_sec: 0.25
     reader_restart_timeout_sec: 2.0
+    post_recovery_hold_sec: 1.0
     sync_target_with_current_pose_when_idle: true
 
     workspace_min: [0.20, -0.45, 0.08]

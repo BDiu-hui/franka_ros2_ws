@@ -102,18 +102,18 @@ class FrankaHTTPBridge(Node):
         self.declare_parameter("gripper_timeout_sec", 15.0)
         self.declare_parameter("apply_default_collision_behavior", True)
         self.declare_parameter("collision_behavior_service", "/service_server/set_full_collision_behavior")
-        self.declare_parameter("lower_torque_thresholds_nominal", [40.0, 40.0, 35.0, 35.0, 30.0, 25.0, 20.0])
-        self.declare_parameter("upper_torque_thresholds_nominal", [55.0, 55.0, 50.0, 50.0, 45.0, 40.0, 35.0])
+        self.declare_parameter("lower_torque_thresholds_nominal", [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0])
+        self.declare_parameter("upper_torque_thresholds_nominal", [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0])
         self.declare_parameter(
-            "lower_torque_thresholds_acceleration", [40.0, 40.0, 35.0, 35.0, 30.0, 25.0, 20.0]
+            "lower_torque_thresholds_acceleration", [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
         )
         self.declare_parameter(
-            "upper_torque_thresholds_acceleration", [55.0, 55.0, 50.0, 50.0, 45.0, 40.0, 35.0]
+            "upper_torque_thresholds_acceleration", [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
         )
-        self.declare_parameter("lower_force_thresholds_nominal", [45.0, 45.0, 45.0, 35.0, 35.0, 35.0])
-        self.declare_parameter("upper_force_thresholds_nominal", [60.0, 60.0, 60.0, 50.0, 50.0, 50.0])
-        self.declare_parameter("lower_force_thresholds_acceleration", [45.0, 45.0, 45.0, 35.0, 35.0, 35.0])
-        self.declare_parameter("upper_force_thresholds_acceleration", [60.0, 60.0, 60.0, 50.0, 50.0, 50.0])
+        self.declare_parameter("lower_force_thresholds_nominal", [30.0, 30.0, 30.0, 25.0, 25.0, 25.0])
+        self.declare_parameter("upper_force_thresholds_nominal", [40.0, 40.0, 40.0, 35.0, 35.0, 35.0])
+        self.declare_parameter("lower_force_thresholds_acceleration", [30.0, 30.0, 30.0, 25.0, 25.0, 25.0])
+        self.declare_parameter("upper_force_thresholds_acceleration", [40.0, 40.0, 40.0, 35.0, 35.0, 35.0])
         self.declare_parameter("auto_clear_error", False)
         self.declare_parameter("auto_start_impedance", False)
         self.declare_parameter("auto_start_delay_sec", 3.0)

@@ -46,8 +46,7 @@ ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
   robot_ip:=172.16.0.2 \
   robot_type:=fr3 \
   load_gripper:=true \
-  start_rviz:=false \
-  base_frame:=base
+  start_rviz:=false
 ```
 
 默认 `auto_start_impedance:=true`，launch 会自动执行等价于下面的动作:

@@ -14,7 +14,7 @@ from rclpy.qos import QoSDurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 
-from controller_manager_msgs.srv import SwitchController
+from controller_manager_msgs.srv import ListControllers, SwitchController
 from franka_msgs.action import ErrorRecovery
 from franka_msgs.msg import FrankaRobotState
 from rcl_interfaces.msg import Log
@@ -97,13 +97,18 @@ class FrankaErrorRecoveryWatchdog(Node):
         )
         self.log_file_glob = str(self.get_parameter("log_file_glob").value)
 
+        controller_manager_prefix = (
+            self.controller_manager.rstrip("/") if self.controller_manager else "controller_manager"
+        )
         switch_service = (
             f"{self.controller_manager.rstrip('/')}/switch_controller"
             if self.controller_manager
             else "controller_manager/switch_controller"
         )
+        list_service = f"{controller_manager_prefix}/list_controllers"
         self.error_recovery_client = ActionClient(self, ErrorRecovery, self.error_recovery_action)
         self.switch_controller_client = self.create_client(SwitchController, switch_service)
+        self.list_controllers_client = self.create_client(ListControllers, list_service)
         self.recovering_pub = self.create_publisher(Bool, self.recovering_topic, 10)
 
         qos = QoSProfile(
@@ -270,7 +275,7 @@ class FrankaErrorRecoveryWatchdog(Node):
 
     def _deactivate_controllers_for_recovery(self) -> None:
         try:
-            self._switch_controllers([], self._controllers_to_deactivate())
+            self._switch_controllers([], self._controllers_to_deactivate_for_recovery())
             self.get_logger().info("Stopped active command controllers before error recovery.")
         except Exception as exc:  # pylint: disable=broad-except
             self.get_logger().warn(f"Could not stop controllers before recovery, continuing anyway: {exc}")
@@ -289,6 +294,7 @@ class FrankaErrorRecoveryWatchdog(Node):
 
     def _restart_impedance_controller(self) -> None:
         self._switch_controllers([self.impedance_controller], self._controllers_to_deactivate())
+        self._wait_for_controller_state(self.impedance_controller, "active")
         self.get_logger().info(
             "Impedance controller restart requested "
             f"activate={[self.impedance_controller]}, deactivate={self._controllers_to_deactivate()}"
@@ -323,6 +329,44 @@ class FrankaErrorRecoveryWatchdog(Node):
             for name in self.deactivate_controllers_on_restart
             if name and name != self.impedance_controller
         ]
+
+    def _controllers_to_deactivate_for_recovery(self) -> List[str]:
+        controllers = [self.impedance_controller]
+        controllers.extend(self.deactivate_controllers_on_restart)
+        return self._unique_controller_names(controllers)
+
+    @staticmethod
+    def _unique_controller_names(names: List[str]) -> List[str]:
+        unique = []
+        seen = set()
+        for name in names:
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            unique.append(name)
+        return unique
+
+    def _wait_for_controller_state(self, controller_name: str, desired_state: str) -> None:
+        deadline = time.time() + self.controller_switch_timeout_sec
+        last_states = {}
+        while time.time() < deadline:
+            last_states = self._list_controller_states()
+            if last_states.get(controller_name) == desired_state:
+                return
+            time.sleep(0.1)
+        raise RuntimeError(
+            f"Controller '{controller_name}' did not reach state '{desired_state}'. "
+            f"Current controllers={last_states}"
+        )
+
+    def _list_controller_states(self) -> dict[str, str]:
+        if not self.list_controllers_client.wait_for_service(timeout_sec=self.request_timeout_sec):
+            raise RuntimeError("Controller manager list_controllers service is unavailable")
+        response = self._await_future(
+            self.list_controllers_client.call_async(ListControllers.Request()),
+            self.request_timeout_sec,
+        )
+        return {controller.name: controller.state for controller in response.controller}
 
     def _publish_recovering(self, recovering: bool) -> None:
         msg = Bool()

@@ -72,6 +72,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.declare_parameter("max_rotation_step_rad", 0.12)
         self.declare_parameter("quest_pose_grace_period_sec", 0.25)
         self.declare_parameter("reader_restart_timeout_sec", 2.0)
+        self.declare_parameter("post_recovery_hold_sec", 1.0)
         self.declare_parameter("sync_target_with_current_pose_when_idle", True)
         self.declare_parameter("workspace_min", [0.20, -0.45, 0.08])
         self.declare_parameter("workspace_max", [0.80, 0.45, 0.75])
@@ -134,6 +135,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
             float(self.get_parameter("reader_restart_timeout_sec").value),
             0.0,
         )
+        self.post_recovery_hold_sec = max(
+            float(self.get_parameter("post_recovery_hold_sec").value),
+            0.0,
+        )
         self.sync_target_when_idle = bool(
             self.get_parameter("sync_target_with_current_pose_when_idle").value
         )
@@ -175,6 +180,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.have_current_pose = False
         self.franka_in_error = False
         self.recovery_active = False
+        self.recovery_hold_until = 0.0
         self.last_franka_error_signature = ""
         self.teleop_enabled = False
         self.previous_hand_position: np.ndarray | None = None
@@ -333,6 +339,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self.get_logger().info(
                 "Franka recovery watchdog finished; teleop will re-anchor on next grip input."
             )
+            self._start_recovery_hold()
         self.recovery_active = False
 
     def controller_pose_callback(self, msg: PoseStamped) -> None:
@@ -427,7 +434,8 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self._publish_raw_pose(stamp, raw_position, raw_rotation)
 
         enabled = self._is_enabled(buttons)
-        if self.franka_in_error or self.recovery_active:
+        recovery_hold_active = now < self.recovery_hold_until
+        if self.franka_in_error or self.recovery_active or recovery_hold_active:
             self._publish_enabled(False)
             self._set_idle_target()
             self._publish_zero_delta(stamp)
@@ -438,7 +446,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 delta_robot=np.zeros(3, dtype=float),
                 delta_rotvec_quest=np.zeros(3, dtype=float),
                 delta_rotvec_robot=np.zeros(3, dtype=float),
-                note="franka_recovery_hold" if self.recovery_active else "franka_error_hold",
+                note=self._recovery_hold_note(now),
             )
             return
 
@@ -557,6 +565,21 @@ class SimpleQuestImpedanceTeleopNode(Node):
         if self.sync_target_when_idle and self.have_current_pose:
             self.target_position = self.current_position.copy()
             self.target_rotation = self.current_rotation.copy()
+
+    def _start_recovery_hold(self) -> None:
+        if self.post_recovery_hold_sec <= 0.0:
+            return
+        self.recovery_hold_until = max(
+            self.recovery_hold_until,
+            time.monotonic() + self.post_recovery_hold_sec,
+        )
+
+    def _recovery_hold_note(self, now: float) -> str:
+        if self.recovery_active:
+            return "franka_recovery_hold"
+        if now < self.recovery_hold_until:
+            return "post_recovery_hold"
+        return "franka_error_hold"
 
     def _is_enabled(self, buttons: dict[str, Any]) -> bool:
         if self.enable_analog_name:
