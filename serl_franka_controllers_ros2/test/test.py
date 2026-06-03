@@ -2,11 +2,11 @@ import time
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
+from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
 
 
 def clip_translation(vector):
@@ -24,7 +24,7 @@ def clip_rotation(vector):
 
 
 def make_pose_msg(pose):
-    msg = PoseStamped()
+    msg = CartesianImpedanceCommand()
     msg.pose.position.x = pose[0]
     msg.pose.position.y = pose[1]
     msg.pose.position.z = pose[2]
@@ -32,6 +32,7 @@ def make_pose_msg(pose):
     msg.pose.orientation.y = pose[4]
     msg.pose.orientation.z = pose[5]
     msg.pose.orientation.w = pose[6]
+    msg.has_master_q = False
     return msg
 
 
@@ -46,7 +47,7 @@ class FrankaControlExample(Node):
     def __init__(self):
         super().__init__("franka_control_api")
         self.publisher = self.create_publisher(
-            PoseStamped, "/cartesian_impedance_controller/equilibrium_pose", 10
+            CartesianImpedanceCommand, "/cartesian_impedance_controller/equilibrium_pose", 10
         )
         self.parameters_client = self.create_client(
             SetParameters, "/cartesian_impedance_controller/set_parameters"

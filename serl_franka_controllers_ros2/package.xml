@@ -34,6 +34,7 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>realtime_tools</depend>
   <depend>rviz_common</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
 
   <exec_depend>controller_manager</exec_depend>

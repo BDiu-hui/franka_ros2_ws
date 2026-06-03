@@ -32,10 +32,14 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(realtime_tools REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(rviz_common REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ZeroJacobian.msg"
+  "msg/CartesianImpedanceCommand.msg"
+  DEPENDENCIES std_msgs geometry_msgs
 )
 
 set(controller_library ${PROJECT_NAME}_controllers)
@@ -70,6 +74,8 @@ ament_target_dependencies(${controller_library}
   rclcpp
   rclcpp_lifecycle
   realtime_tools
+  sensor_msgs
+  std_msgs
 )
 
 target_include_directories(${PROJECT_NAME}_rviz_panel PUBLIC
@@ -158,6 +164,8 @@ ament_export_dependencies(
   realtime_tools
   rosidl_default_runtime
   rviz_common
+  sensor_msgs
+  std_msgs
 )
 
 ament_package()

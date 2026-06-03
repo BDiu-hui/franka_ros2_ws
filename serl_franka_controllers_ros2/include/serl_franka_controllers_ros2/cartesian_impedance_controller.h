@@ -23,6 +23,7 @@
 #define NON_POLLING 1  // NOLINT
 #include <realtime_tools/realtime_publisher.hpp>
 
+#include <serl_franka_controllers_ros2/msg/cartesian_impedance_command.hpp>
 #include <serl_franka_controllers_ros2/msg/zero_jacobian.hpp>
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
@@ -65,12 +66,16 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
     double translational_ki{0.0};
     double rotational_ki{0.0};
     double filter_params{0.005};
+    double elbow_stiffness{0.0};
+    double elbow_damping{0.0};
   };
 
   Eigen::Matrix<double, 7, 1> saturate_torque_rate(
       const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
       const Eigen::Matrix<double, 7, 1>& tau_j_d) const;
-  void equilibrium_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  void equilibrium_pose_callback(
+      const serl_franka_controllers_ros2::msg::CartesianImpedanceCommand::SharedPtr msg);
+  Eigen::Vector3d compute_elbow_position(const Eigen::Matrix<double, 7, 1>& q) const;
   void apply_compliance_params(const ComplianceParams& params);
   bool read_parameters();
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
@@ -96,7 +101,8 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   std::shared_ptr<
       realtime_tools::RealtimePublisher<serl_franka_controllers_ros2::msg::ZeroJacobian>>
       realtime_jacobian_publisher_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr equilibrium_pose_subscriber_;
+  rclcpp::Subscription<serl_franka_controllers_ros2::msg::CartesianImpedanceCommand>::SharedPtr
+      equilibrium_pose_subscriber_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 
   ComplianceParams compliance_params_;
@@ -114,6 +120,9 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Eigen::Matrix<double, 3, 1> rotational_clip_min_{Eigen::Matrix<double, 3, 1>::Zero()};
   Eigen::Matrix<double, 3, 1> rotational_clip_max_{Eigen::Matrix<double, 3, 1>::Zero()};
   Eigen::Matrix<double, 7, 1> q_d_nullspace_{Eigen::Matrix<double, 7, 1>::Zero()};
+  Eigen::Matrix<double, 7, 1> q_master_target_{Eigen::Matrix<double, 7, 1>::Zero()};
+  Eigen::Matrix<double, 7, 1> q_master_{Eigen::Matrix<double, 7, 1>::Zero()};
+  bool have_master_q_{false};
   Eigen::Matrix<double, 6, 1> error_{Eigen::Matrix<double, 6, 1>::Zero()};
   Eigen::Matrix<double, 6, 1> error_i_{Eigen::Matrix<double, 6, 1>::Zero()};
 
@@ -126,6 +135,10 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   double nullspace_stiffness_target_{20.0};
   double joint1_nullspace_stiffness_{20.0};
   double joint1_nullspace_stiffness_target_{20.0};
+  double elbow_stiffness_{0.0};
+  double elbow_stiffness_target_{0.0};
+  double elbow_damping_{0.0};
+  double elbow_damping_target_{0.0};
 };
 
 }  // namespace serl_franka_controllers
