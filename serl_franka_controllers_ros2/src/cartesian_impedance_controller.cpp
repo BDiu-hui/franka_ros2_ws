@@ -92,6 +92,8 @@ CallbackReturn CartesianImpedanceController::on_init() {
     auto_declare<double>("translational_ki", compliance_params_.translational_ki);
     auto_declare<double>("rotational_ki", compliance_params_.rotational_ki);
     auto_declare<double>("filter_params", compliance_params_.filter_params);
+    auto_declare<double>("elbow_stiffness", compliance_params_.elbow_stiffness);
+    auto_declare<double>("elbow_damping", compliance_params_.elbow_damping);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Init failed: %s", e.what());
     return CallbackReturn::ERROR;
@@ -160,6 +162,8 @@ bool CartesianImpedanceController::read_parameters() {
   compliance_params_.translational_ki = get_node()->get_parameter("translational_ki").as_double();
   compliance_params_.rotational_ki = get_node()->get_parameter("rotational_ki").as_double();
   compliance_params_.filter_params = get_node()->get_parameter("filter_params").as_double();
+  compliance_params_.elbow_stiffness = get_node()->get_parameter("elbow_stiffness").as_double();
+  compliance_params_.elbow_damping = get_node()->get_parameter("elbow_damping").as_double();
 
   return true;
 }
@@ -180,7 +184,8 @@ CallbackReturn CartesianImpedanceController::on_configure(
       std::make_shared<realtime_tools::RealtimePublisher<
           serl_franka_controllers_ros2::msg::ZeroJacobian>>(jacobian_publisher_);
 
-  equilibrium_pose_subscriber_ = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(
+  equilibrium_pose_subscriber_ =
+      get_node()->create_subscription<serl_franka_controllers_ros2::msg::CartesianImpedanceCommand>(
       "~/equilibrium_pose", rclcpp::SystemDefaultsQoS(),
       std::bind(&CartesianImpedanceController::equilibrium_pose_callback, this,
                 std::placeholders::_1));
@@ -223,6 +228,12 @@ CallbackReturn CartesianImpedanceController::on_activate(
   }
 
   q_d_nullspace_ = q_initial;
+  {
+    std::lock_guard<std::mutex> lock(target_mutex_);
+    q_master_target_ = q_initial;
+    have_master_q_ = false;
+  }
+  q_master_ = q_initial;
   error_i_.setZero();
   return CallbackReturn::SUCCESS;
 }
@@ -257,10 +268,14 @@ controller_interface::return_type CartesianImpedanceController::update(
 
   Eigen::Vector3d position_target;
   Eigen::Quaterniond orientation_target;
+  Eigen::Matrix<double, 7, 1> q_master_target_local;
+  bool have_master_q_local;
   {
     std::lock_guard<std::mutex> lock(target_mutex_);
     position_target = position_d_target_;
     orientation_target = orientation_d_target_;
+    q_master_target_local = q_master_target_;
+    have_master_q_local = have_master_q_;
   }
 
   error_.head(3) = position - position_d_;
@@ -298,7 +313,27 @@ controller_interface::return_type CartesianImpedanceController::update(
   tau_nullspace =
       (Eigen::MatrixXd::Identity(kNumJoints, kNumJoints) - jacobian.transpose() * jacobian_transpose_pinv) *
       (nullspace_stiffness_ * qe - (2.0 * std::sqrt(nullspace_stiffness_)) * dqe);
-  tau_d = tau_task + tau_nullspace + coriolis;
+
+  Eigen::Matrix<double, 7, 1> tau_elbow_null = Eigen::Matrix<double, 7, 1>::Zero();
+  if (have_master_q_local && elbow_stiffness_ > 0.0) {
+    const Eigen::Vector3d elbow_master = compute_elbow_position(q_master_);
+    const auto elbow_pose_array = franka_robot_model_->getPoseMatrix(franka::Frame::kJoint4);
+    const Eigen::Affine3d elbow_transform(Eigen::Matrix4d::Map(elbow_pose_array.data()));
+    const Eigen::Vector3d elbow_slave = elbow_transform.translation();
+    const auto elbow_jac_array = franka_robot_model_->getZeroJacobian(franka::Frame::kJoint4);
+    const Eigen::Map<const Eigen::Matrix<double, 6, 7>> J_e_full(elbow_jac_array.data());
+    const Eigen::Matrix<double, 3, 7> J_e = J_e_full.topRows(3);
+
+    const Eigen::Vector3d e_pos = elbow_master - elbow_slave;
+    const Eigen::Matrix<double, 7, 1> tau_elbow_task =
+        J_e.transpose() * (elbow_stiffness_ * e_pos - elbow_damping_ * (J_e * dq));
+
+    tau_elbow_null =
+        (Eigen::MatrixXd::Identity(kNumJoints, kNumJoints) -
+         jacobian.transpose() * jacobian_transpose_pinv) * tau_elbow_task;
+  }
+
+  tau_d = tau_task + tau_nullspace + tau_elbow_null + coriolis;
   tau_d = saturate_torque_rate(tau_d, tau_j_d);
 
   for (size_t i = 0; i < kNumJoints; ++i) {
@@ -319,6 +354,12 @@ controller_interface::return_type CartesianImpedanceController::update(
   orientation_d_ = orientation_d_.slerp(compliance_params_.filter_params, orientation_target);
   ki_ = compliance_params_.filter_params * ki_target_ +
         (1.0 - compliance_params_.filter_params) * ki_;
+  q_master_ = compliance_params_.filter_params * q_master_target_local +
+              (1.0 - compliance_params_.filter_params) * q_master_;
+  elbow_stiffness_ = compliance_params_.filter_params * elbow_stiffness_target_ +
+                     (1.0 - compliance_params_.filter_params) * elbow_stiffness_;
+  elbow_damping_ = compliance_params_.filter_params * elbow_damping_target_ +
+                   (1.0 - compliance_params_.filter_params) * elbow_damping_;
 
   return controller_interface::return_type::OK;
 }
@@ -362,6 +403,8 @@ void CartesianImpedanceController::apply_compliance_params(const ComplianceParam
 
   nullspace_stiffness_target_ = params.nullspace_stiffness;
   joint1_nullspace_stiffness_target_ = params.joint1_nullspace_stiffness;
+  elbow_stiffness_target_ = params.elbow_stiffness;
+  elbow_damping_target_ = params.elbow_damping;
 
   translational_clip_min_ << -params.translational_clip_neg_x, -params.translational_clip_neg_y,
       -params.translational_clip_neg_z;
@@ -381,10 +424,12 @@ void CartesianImpedanceController::apply_compliance_params(const ComplianceParam
   ki_ = ki_target_;
   nullspace_stiffness_ = nullspace_stiffness_target_;
   joint1_nullspace_stiffness_ = joint1_nullspace_stiffness_target_;
+  elbow_stiffness_ = elbow_stiffness_target_;
+  elbow_damping_ = elbow_damping_target_;
 }
 
 void CartesianImpedanceController::equilibrium_pose_callback(
-    const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+    const serl_franka_controllers_ros2::msg::CartesianImpedanceCommand::SharedPtr msg) {
   std::lock_guard<std::mutex> lock(target_mutex_);
   position_d_target_ << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
   error_i_.setZero();
@@ -394,6 +439,38 @@ void CartesianImpedanceController::equilibrium_pose_callback(
   if (last_orientation_d_target.coeffs().dot(orientation_d_target_.coeffs()) < 0.0) {
     orientation_d_target_.coeffs() = -orientation_d_target_.coeffs();
   }
+  if (msg->has_master_q) {
+    for (size_t i = 0; i < kNumJoints; ++i) {
+      q_master_target_(static_cast<Eigen::Index>(i)) = msg->master_q[i];
+    }
+    have_master_q_ = true;
+  } else {
+    have_master_q_ = false;
+  }
+}
+
+Eigen::Vector3d CartesianImpedanceController::compute_elbow_position(
+    const Eigen::Matrix<double, 7, 1>& q) const {
+  // Modified-DH parameters for Franka FR3 / Panda (frames 0 through 4).
+  // a_{i-1}, alpha_{i-1}, d_i for i = 1..4 (joint 4 origin in base frame).
+  static constexpr std::array<double, 4> a_prev = {0.0, 0.0, 0.0, 0.0825};
+  static constexpr std::array<double, 4> alpha_prev = {0.0, -M_PI_2, M_PI_2, M_PI_2};
+  static constexpr std::array<double, 4> d = {0.333, 0.0, 0.316, 0.0};
+
+  Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
+  for (int i = 0; i < 4; ++i) {
+    const double ca = std::cos(alpha_prev[i]);
+    const double sa = std::sin(alpha_prev[i]);
+    const double ct = std::cos(q(i));
+    const double st = std::sin(q(i));
+    Eigen::Matrix4d A;
+    A << ct,     -st,     0.0,   a_prev[i],
+         st * ca, ct * ca, -sa,  -sa * d[i],
+         st * sa, ct * sa,  ca,   ca * d[i],
+         0.0,    0.0,     0.0,   1.0;
+    T = T * A;
+  }
+  return T.block<3, 1>(0, 3);
 }
 
 rcl_interfaces::msg::SetParametersResult CartesianImpedanceController::on_parameters_set(
@@ -443,6 +520,10 @@ rcl_interfaces::msg::SetParametersResult CartesianImpedanceController::on_parame
       updated.rotational_ki = parameter.as_double();
     } else if (name == "filter_params") {
       updated.filter_params = parameter.as_double();
+    } else if (name == "elbow_stiffness") {
+      updated.elbow_stiffness = parameter.as_double();
+    } else if (name == "elbow_damping") {
+      updated.elbow_damping = parameter.as_double();
     }
   }
 

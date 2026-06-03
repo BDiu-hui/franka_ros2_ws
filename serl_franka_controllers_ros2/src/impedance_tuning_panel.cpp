@@ -141,6 +141,8 @@ void ImpedanceTuningPanel::build_ui() {
       {"translational_ki", 0.0, 50.0, 0.1, 0.0, "Translational KI"},
       {"rotational_ki", 0.0, 50.0, 0.1, 0.0, "Rotational KI"},
       {"filter_params", 0.001, 0.10, 0.001, 0.005, "Filter Params"},
+      {"elbow_stiffness", 0.0, 200.0, 1.0, 0.0, "Elbow Stiffness"},
+      {"elbow_damping", 0.0, 40.0, 0.1, 0.0, "Elbow Damping"},
   };
 
   for (const auto& spec : specs) {
@@ -397,6 +399,8 @@ std::map<std::string, double> ImpedanceTuningPanel::raw_config_values() const {
       {"translational_ki", 0.0},
       {"rotational_ki", 0.0},
       {"filter_params", 0.02},
+      {"elbow_stiffness", 0.0},
+      {"elbow_damping", 0.0},
   };
 }
 

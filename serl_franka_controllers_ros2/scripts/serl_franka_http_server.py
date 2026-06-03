@@ -38,6 +38,7 @@ from rcl_interfaces.srv import GetParameters
 from rcl_interfaces.srv import SetParameters
 from rcl_interfaces.srv import SetParametersAtomically
 from sensor_msgs.msg import JointState
+from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
 from serl_franka_controllers_ros2.msg import ZeroJacobian
 from std_srvs.srv import Trigger
 
@@ -188,7 +189,7 @@ class FrankaHTTPBridge(Node):
         )
 
         self.pose_publisher = self.create_publisher(
-            PoseStamped,
+            CartesianImpedanceCommand,
             self.get_parameter("equilibrium_pose_topic").get_parameter_value().string_value,
             10,
         )
@@ -435,7 +436,7 @@ class FrankaHTTPBridge(Node):
             "/health": self.health,
             "/startimp": self.start_impedance,
             "/stopimp": self.stop_impedance,
-            "/pose": lambda: self.move_pose(payload["arr"]),
+            "/pose": lambda: self.move_pose(payload["arr"], payload.get("q")),
             "/pose_precise": lambda: self.move_pose_precise(payload["arr"], payload),
             "/getpos": self.get_pose,
             "/getpos_euler": self.get_pose_euler,
@@ -600,9 +601,11 @@ class FrankaHTTPBridge(Node):
             "speed": speed,
         }
 
-    def move_pose(self, pose: List[float]) -> Dict[str, Any]:
+    def move_pose(self, pose: List[float], q: Optional[List[float]] = None) -> Dict[str, Any]:
         if len(pose) != 7:
             raise ValueError("pose must contain [x, y, z, qx, qy, qz, qw]")
+        if q is not None and len(q) != 7:
+            raise ValueError("q must contain 7 joint angles")
 
         states = self._controller_states()
         if states.get(self.impedance_controller) != "active":
@@ -614,7 +617,7 @@ class FrankaHTTPBridge(Node):
             else:
                 raise RuntimeError("Impedance controller is inactive and no fallback is enabled")
 
-        msg = PoseStamped()
+        msg = CartesianImpedanceCommand()
         msg.header.frame_id = self.base_frame
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.pose.position.x = float(pose[0])
@@ -624,11 +627,17 @@ class FrankaHTTPBridge(Node):
         msg.pose.orientation.y = float(pose[4])
         msg.pose.orientation.z = float(pose[5])
         msg.pose.orientation.w = float(pose[6])
+        msg.has_master_q = q is not None
+        if q is not None:
+            msg.master_q = [float(v) for v in q]
         self.pose_publisher.publish(msg)
         method = "cartesian_impedance_controller"
         if states.get(self.impedance_controller) != "active":
             method = "auto_started_cartesian_impedance_controller"
-        return {"ok": True, "message": "Moved", "pose": pose, "method": method}
+        response: Dict[str, Any] = {"ok": True, "message": "Moved", "pose": pose, "method": method}
+        if q is not None:
+            response["q"] = [float(v) for v in q]
+        return response
 
     def move_pose_precise(self, pose: List[float], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if len(pose) != 7:
