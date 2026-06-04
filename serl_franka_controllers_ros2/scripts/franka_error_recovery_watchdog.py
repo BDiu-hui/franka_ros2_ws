@@ -6,6 +6,11 @@ import time
 from pathlib import Path
 from typing import List
 
+try:
+    import numpy as np  # for SVD-based Jacobian condition number
+except ImportError:  # pragma: no cover - rare on ROS 2 installs
+    np = None  # type: ignore[assignment]
+
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -26,6 +31,7 @@ from geometry_msgs.msg import Pose
 from lifecycle_msgs.msg import State as LifecycleState
 from rcl_interfaces.msg import Log
 from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
+from serl_franka_controllers_ros2.msg import ZeroJacobian
 from std_msgs.msg import Bool
 
 
@@ -175,6 +181,12 @@ class FrankaErrorRecoveryWatchdog(Node):
             self._franka_state_callback,
             self._best_effort_qos(),
         )
+        self.create_subscription(
+            ZeroJacobian,
+            f"{self.impedance_controller}/franka_jacobian",
+            self._jacobian_callback,
+            10,
+        )
 
         self._lock = threading.Lock()
         self._recovery_running = False
@@ -183,6 +195,10 @@ class FrankaErrorRecoveryWatchdog(Node):
         self._latest_o_t_ee_pose: Pose | None = None
         self._latest_o_t_ee_frame: str = ""
         self._latest_joint_positions: List[float] | None = None
+        self._latest_joint_velocities: List[float] | None = None
+        self._latest_joint_efforts: List[float] | None = None
+        self._latest_desired_joint_efforts: List[float] | None = None
+        self._latest_jacobian: List[float] | None = None
         self._latest_o_t_ee_lock = threading.Lock()
         self._start_wall_time = time.time()
         self._log_file_offsets: dict[Path, int] = {}
@@ -247,12 +263,24 @@ class FrankaErrorRecoveryWatchdog(Node):
                     break
             self._log_file_offsets[path] = log_file.tell()
 
+    def _jacobian_callback(self, msg: ZeroJacobian) -> None:
+        # 42-element flat array, column-major layout (6 rows x 7 cols).
+        if len(msg.zero_jacobian) == 42:
+            with self._latest_o_t_ee_lock:
+                self._latest_jacobian = list(msg.zero_jacobian)
+
     def _franka_state_callback(self, msg: FrankaRobotState) -> None:
         with self._latest_o_t_ee_lock:
             self._latest_o_t_ee_pose = msg.o_t_ee.pose
             self._latest_o_t_ee_frame = msg.o_t_ee.header.frame_id
             if msg.measured_joint_state.position:
                 self._latest_joint_positions = list(msg.measured_joint_state.position)
+            if msg.measured_joint_state.velocity:
+                self._latest_joint_velocities = list(msg.measured_joint_state.velocity)
+            if msg.measured_joint_state.effort:
+                self._latest_joint_efforts = list(msg.measured_joint_state.effort)
+            if msg.desired_joint_state.effort:
+                self._latest_desired_joint_efforts = list(msg.desired_joint_state.effort)
 
         if not self.enabled:
             return
@@ -336,44 +364,119 @@ class FrankaErrorRecoveryWatchdog(Node):
         (0.5445, 4.5169),
         (-3.0159, 3.0159),
     ]
+    # FR3 joint velocity limits in rad/s (per official datasheet).
+    _FR3_JOINT_VEL_LIMITS = [2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26]
     _NEAR_LIMIT_MARGIN_RAD = 0.10  # ~5.7 deg
+    _NEAR_VEL_LIMIT_FRACTION = 0.50  # flag if |dq| > 50% of limit
+    # Below this smallest singular value (m/rad-equiv), Jacobian is near-singular.
+    _SINGULAR_SV_THRESHOLD = 0.04
+    _ILL_COND_THRESHOLD = 100.0  # condition number above this is suspect
 
     def _log_joint_limit_diagnostics(self) -> None:
         with self._latest_o_t_ee_lock:
             q = list(self._latest_joint_positions) if self._latest_joint_positions else None
-        if q is None or len(q) != 7:
-            self.get_logger().warn(
-                "Joint-limit diagnostic skipped: no measured_joint_state cached yet."
+            dq = list(self._latest_joint_velocities) if self._latest_joint_velocities else None
+            tau = list(self._latest_joint_efforts) if self._latest_joint_efforts else None
+            tau_d = (
+                list(self._latest_desired_joint_efforts)
+                if self._latest_desired_joint_efforts
+                else None
             )
-            return
+            jac = list(self._latest_jacobian) if self._latest_jacobian else None
 
-        rows: List[str] = []
-        flagged: List[str] = []
-        for i, (lo, hi) in enumerate(self._FR3_JOINT_LIMITS):
-            qi = q[i]
-            margin_lo = qi - lo
-            margin_hi = hi - qi
-            nearest = "lo" if margin_lo < margin_hi else "hi"
-            margin = min(margin_lo, margin_hi)
-            tag = ""
-            if margin < self._NEAR_LIMIT_MARGIN_RAD:
-                tag = "  <-- NEAR LIMIT"
-                flagged.append(
-                    f"q{i + 1}={qi:+.4f} rad ({qi * 57.2958:+.1f} deg), "
-                    f"margin_{nearest}={margin:+.4f} rad"
+        sections: List[str] = []
+        critical_flags: List[str] = []
+
+        # --- 1. Joint positions vs limits ---
+        if q is not None and len(q) == 7:
+            rows = []
+            for i, (lo, hi) in enumerate(self._FR3_JOINT_LIMITS):
+                margin_lo = q[i] - lo
+                margin_hi = hi - q[i]
+                margin = min(margin_lo, margin_hi)
+                tag = ""
+                if margin < self._NEAR_LIMIT_MARGIN_RAD:
+                    tag = "  <-- NEAR POSITION LIMIT"
+                    critical_flags.append(
+                        f"q{i + 1} near position limit: q={q[i]:+.4f}, "
+                        f"margin={margin:+.4f} rad"
+                    )
+                rows.append(
+                    f"  q{i + 1}={q[i]:+.4f} rad ({q[i] * 57.2958:+6.1f} deg)  "
+                    f"limits=[{lo:+.4f}, {hi:+.4f}]  margin={margin:+.4f}{tag}"
                 )
-            rows.append(
-                f"  q{i + 1}={qi:+.4f} rad ({qi * 57.2958:+.1f} deg)  "
-                f"limits=[{lo:+.4f}, {hi:+.4f}]  "
-                f"margin_lo={margin_lo:+.4f}  margin_hi={margin_hi:+.4f}{tag}"
-            )
+            sections.append("Joint positions:\n" + "\n".join(rows))
+        else:
+            sections.append("Joint positions: (not yet received)")
 
-        header = "FR3 joint state at reflex time:\n" + "\n".join(rows)
-        if flagged:
-            header += (
-                "\nNEAR-LIMIT JOINTS (margin < "
-                f"{self._NEAR_LIMIT_MARGIN_RAD:.3f} rad): " + "; ".join(flagged)
+        # --- 2. Joint velocities vs limits ---
+        if dq is not None and len(dq) == 7:
+            rows = []
+            for i, vmax in enumerate(self._FR3_JOINT_VEL_LIMITS):
+                ratio = abs(dq[i]) / vmax if vmax > 0 else 0.0
+                tag = ""
+                if ratio > self._NEAR_VEL_LIMIT_FRACTION:
+                    tag = f"  <-- HIGH VELOCITY ({ratio * 100:.0f}% of limit)"
+                    critical_flags.append(
+                        f"q{i + 1} velocity {dq[i]:+.3f} rad/s "
+                        f"({ratio * 100:.0f}% of {vmax:.2f})"
+                    )
+                rows.append(
+                    f"  dq{i + 1}={dq[i]:+.3f} rad/s  limit=±{vmax:.2f}  |dq|/lim={ratio:.2f}{tag}"
+                )
+            sections.append("Joint velocities:\n" + "\n".join(rows))
+
+        # --- 3. Measured vs desired joint torques (controller-side sanity) ---
+        if tau is not None and tau_d is not None and len(tau) == 7 and len(tau_d) == 7:
+            rows = []
+            for i in range(7):
+                rows.append(
+                    f"  j{i + 1}: tau_meas={tau[i]:+7.2f} Nm, "
+                    f"tau_J_d={tau_d[i]:+7.2f} Nm, diff={tau[i] - tau_d[i]:+7.2f}"
+                )
+            sections.append("Joint torques (measured vs last desired):\n" + "\n".join(rows))
+
+        # --- 4. Jacobian conditioning (singularity check) ---
+        if jac is not None and len(jac) == 42 and np is not None:
+            # Eigen Map<Matrix<double,6,7>> default-storage is column-major,
+            # so reshape flat[42] into (7, 6) and transpose to get the 6x7 J.
+            try:
+                jac_matrix = np.asarray(jac, dtype=float).reshape((7, 6)).T
+                singular_values = np.linalg.svd(jac_matrix, compute_uv=False)
+                s_min = float(singular_values.min())
+                s_max = float(singular_values.max())
+                cond = s_max / s_min if s_min > 1e-12 else float("inf")
+                manipulability = float(np.sqrt(np.linalg.det(jac_matrix @ jac_matrix.T)))
+                flags = []
+                if s_min < self._SINGULAR_SV_THRESHOLD:
+                    flags.append(f"NEAR SINGULAR (sigma_min={s_min:.4f} < "
+                                 f"{self._SINGULAR_SV_THRESHOLD})")
+                if cond > self._ILL_COND_THRESHOLD:
+                    flags.append(f"ILL-CONDITIONED (cond={cond:.1f} > "
+                                 f"{self._ILL_COND_THRESHOLD})")
+                if flags:
+                    critical_flags.extend(flags)
+                tag = "  <-- " + ", ".join(flags) if flags else ""
+                sv_str = ", ".join(f"{s:.4f}" for s in singular_values)
+                sections.append(
+                    "Jacobian (6x7) conditioning:\n"
+                    f"  singular_values = [{sv_str}]\n"
+                    f"  sigma_min={s_min:.4f}, sigma_max={s_max:.4f}, cond={cond:.1f}\n"
+                    f"  manipulability w=sqrt(det(J Jᵀ))={manipulability:.4f}{tag}"
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                sections.append(f"Jacobian diagnostic failed: {exc}")
+        elif jac is None:
+            sections.append(
+                "Jacobian: (not yet received — needs impedance controller running "
+                "and franka_jacobian topic active)"
             )
+        elif np is None:
+            sections.append("Jacobian conditioning skipped: numpy not available.")
+
+        header = "FR3 diagnostic at reflex time:\n" + "\n\n".join(sections)
+        if critical_flags:
+            header += "\n*** CRITICAL: " + " | ".join(critical_flags)
             self.get_logger().error(header)
         else:
             self.get_logger().info(header)
