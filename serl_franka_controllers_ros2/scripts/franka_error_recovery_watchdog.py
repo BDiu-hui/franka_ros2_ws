@@ -22,6 +22,7 @@ from controller_manager_msgs.srv import (
 )
 from franka_msgs.action import ErrorRecovery
 from franka_msgs.msg import FrankaRobotState
+from geometry_msgs.msg import PoseStamped
 from lifecycle_msgs.msg import State as LifecycleState
 from rcl_interfaces.msg import Log
 from std_msgs.msg import Bool
@@ -48,6 +49,13 @@ class FrankaErrorRecoveryWatchdog(Node):
         self.declare_parameter("hardware_component_name", "FrankaHardwareInterface")
         self.declare_parameter("reactivate_hardware_after_recovery", True)
         self.declare_parameter("hardware_state_poll_interval_sec", 0.1)
+        self.declare_parameter(
+            "equilibrium_pose_topic",
+            "cartesian_impedance_controller/equilibrium_pose",
+        )
+        self.declare_parameter("republish_equilibrium_after_recovery", True)
+        self.declare_parameter("equilibrium_republish_count", 5)
+        self.declare_parameter("equilibrium_republish_interval_sec", 0.05)
         self.declare_parameter("trigger_patterns", [
             "motion aborted by reflex",
             "communication_constraints_violation",
@@ -85,6 +93,19 @@ class FrankaErrorRecoveryWatchdog(Node):
         self.hardware_state_poll_interval_sec = max(
             0.02,
             float(self.get_parameter("hardware_state_poll_interval_sec").value),
+        )
+        self.equilibrium_pose_topic = str(
+            self.get_parameter("equilibrium_pose_topic").value
+        )
+        self.republish_equilibrium_after_recovery = bool(
+            self.get_parameter("republish_equilibrium_after_recovery").value
+        )
+        self.equilibrium_republish_count = max(
+            1, int(self.get_parameter("equilibrium_republish_count").value)
+        )
+        self.equilibrium_republish_interval_sec = max(
+            0.01,
+            float(self.get_parameter("equilibrium_republish_interval_sec").value),
         )
         self.trigger_patterns = [
             str(pattern) for pattern in self.get_parameter("trigger_patterns").value if str(pattern)
@@ -137,6 +158,7 @@ class FrankaErrorRecoveryWatchdog(Node):
             SetHardwareComponentState, set_hardware_state_service
         )
         self.recovering_pub = self.create_publisher(Bool, self.recovering_topic, 10)
+        self.equilibrium_pub = self.create_publisher(PoseStamped, self.equilibrium_pose_topic, 10)
 
         qos = QoSProfile(
             depth=100,
@@ -155,6 +177,8 @@ class FrankaErrorRecoveryWatchdog(Node):
         self._recovery_running = False
         self._last_recovery_start = 0.0
         self._last_state_error_signature = ""
+        self._latest_o_t_ee: PoseStamped | None = None
+        self._latest_o_t_ee_lock = threading.Lock()
         self._start_wall_time = time.time()
         self._log_file_offsets: dict[Path, int] = {}
         self._log_file_dir = self._resolve_log_file_dir()
@@ -219,6 +243,9 @@ class FrankaErrorRecoveryWatchdog(Node):
             self._log_file_offsets[path] = log_file.tell()
 
     def _franka_state_callback(self, msg: FrankaRobotState) -> None:
+        with self._latest_o_t_ee_lock:
+            self._latest_o_t_ee = msg.o_t_ee
+
         if not self.enabled:
             return
 
@@ -278,6 +305,8 @@ class FrankaErrorRecoveryWatchdog(Node):
 
             if self.restart_impedance_after_recovery:
                 self._restart_impedance_controller()
+                if self.republish_equilibrium_after_recovery:
+                    self._resync_equilibrium_to_current_pose()
 
             self.get_logger().info("Automatic Franka recovery finished; impedance teleop can continue.")
         except Exception as exc:  # pylint: disable=broad-except
@@ -457,6 +486,36 @@ class FrankaErrorRecoveryWatchdog(Node):
         self.get_logger().info(
             "Impedance controller restart succeeded "
             f"activate={[self.impedance_controller]}, deactivate={self._controllers_to_deactivate()}"
+        )
+
+    def _resync_equilibrium_to_current_pose(self) -> None:
+        # After hardware/controller restart, the impedance controller's
+        # on_activate seeds its target with the current pose — but the teleop
+        # client typically resumes sending stale /pose commands immediately,
+        # overwriting that seed. Re-publishing the current pose a few times
+        # right after restart wins that race and keeps the new target close to
+        # the robot's actual position, avoiding an instant joint-velocity
+        # violation that would re-trigger the reflex.
+        with self._latest_o_t_ee_lock:
+            pose = self._latest_o_t_ee
+        if pose is None:
+            self.get_logger().warn(
+                "Skipping equilibrium resync: no robot_state message received yet."
+            )
+            return
+
+        resync = PoseStamped()
+        resync.header.stamp = self.get_clock().now().to_msg()
+        resync.header.frame_id = pose.header.frame_id
+        resync.pose = pose.pose
+
+        for _ in range(self.equilibrium_republish_count):
+            self.equilibrium_pub.publish(resync)
+            time.sleep(self.equilibrium_republish_interval_sec)
+
+        self.get_logger().info(
+            f"Republished current pose to '{self.equilibrium_pose_topic}' "
+            f"x{self.equilibrium_republish_count} to override stale teleop target."
         )
 
     def _switch_controllers_with_retry(
