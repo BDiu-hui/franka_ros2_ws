@@ -13,3 +13,5 @@ libfranka
 franka_description
 olvx_descriptions_module
 .marscode
+franka_ros2_teleop/
+lumos_franka_leader_follower/
