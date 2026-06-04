@@ -14,9 +14,15 @@ from rclpy.qos import QoSDurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 
-from controller_manager_msgs.srv import ListControllers, SwitchController
+from controller_manager_msgs.srv import (
+    ListControllers,
+    ListHardwareComponents,
+    SetHardwareComponentState,
+    SwitchController,
+)
 from franka_msgs.action import ErrorRecovery
 from franka_msgs.msg import FrankaRobotState
+from lifecycle_msgs.msg import State as LifecycleState
 from rcl_interfaces.msg import Log
 from std_msgs.msg import Bool
 
@@ -39,6 +45,9 @@ class FrankaErrorRecoveryWatchdog(Node):
         )
         self.declare_parameter("deactivate_before_recovery", True)
         self.declare_parameter("restart_impedance_after_recovery", True)
+        self.declare_parameter("hardware_component_name", "FrankaHardwareInterface")
+        self.declare_parameter("reactivate_hardware_after_recovery", True)
+        self.declare_parameter("hardware_state_poll_interval_sec", 0.1)
         self.declare_parameter("trigger_patterns", [
             "motion aborted by reflex",
             "communication_constraints_violation",
@@ -66,6 +75,16 @@ class FrankaErrorRecoveryWatchdog(Node):
         self.deactivate_before_recovery = bool(self.get_parameter("deactivate_before_recovery").value)
         self.restart_impedance_after_recovery = bool(
             self.get_parameter("restart_impedance_after_recovery").value
+        )
+        self.hardware_component_name = str(
+            self.get_parameter("hardware_component_name").value
+        ).strip()
+        self.reactivate_hardware_after_recovery = bool(
+            self.get_parameter("reactivate_hardware_after_recovery").value
+        )
+        self.hardware_state_poll_interval_sec = max(
+            0.02,
+            float(self.get_parameter("hardware_state_poll_interval_sec").value),
         )
         self.trigger_patterns = [
             str(pattern) for pattern in self.get_parameter("trigger_patterns").value if str(pattern)
@@ -106,9 +125,17 @@ class FrankaErrorRecoveryWatchdog(Node):
             else "controller_manager/switch_controller"
         )
         list_service = f"{controller_manager_prefix}/list_controllers"
+        list_hardware_service = f"{controller_manager_prefix}/list_hardware_components"
+        set_hardware_state_service = f"{controller_manager_prefix}/set_hardware_component_state"
         self.error_recovery_client = ActionClient(self, ErrorRecovery, self.error_recovery_action)
         self.switch_controller_client = self.create_client(SwitchController, switch_service)
         self.list_controllers_client = self.create_client(ListControllers, list_service)
+        self.list_hardware_client = self.create_client(
+            ListHardwareComponents, list_hardware_service
+        )
+        self.set_hardware_state_client = self.create_client(
+            SetHardwareComponentState, set_hardware_state_service
+        )
         self.recovering_pub = self.create_publisher(Bool, self.recovering_topic, 10)
 
         qos = QoSProfile(
@@ -243,9 +270,13 @@ class FrankaErrorRecoveryWatchdog(Node):
 
             self._clear_error_with_retries()
 
+            if self.post_recovery_delay_sec > 0.0:
+                time.sleep(self.post_recovery_delay_sec)
+
+            if self.reactivate_hardware_after_recovery:
+                self._ensure_hardware_component_active()
+
             if self.restart_impedance_after_recovery:
-                if self.post_recovery_delay_sec > 0.0:
-                    time.sleep(self.post_recovery_delay_sec)
                 self._restart_impedance_controller()
 
             self.get_logger().info("Automatic Franka recovery finished; impedance teleop can continue.")
@@ -291,6 +322,115 @@ class FrankaErrorRecoveryWatchdog(Node):
 
         result_future = goal_handle.get_result_async()
         self._await_future(result_future, self.request_timeout_sec)
+
+    def _ensure_hardware_component_active(self) -> None:
+        # After a reflex, FrankaHardwareInterface.read() returns ERROR; the
+        # controller_manager then transitions the hardware component out of
+        # ACTIVE and the resource_manager marks every command interface as
+        # "Not available". libfranka's automaticErrorRecovery() never touches
+        # this lifecycle state, so we must walk it back to ACTIVE explicitly
+        # before any controller switch can succeed.
+        if not self.hardware_component_name:
+            return
+        try:
+            state_id = self._get_hardware_component_state_id()
+        except Exception as exc:  # pylint: disable=broad-except
+            self.get_logger().warn(
+                f"Could not query hardware component state for "
+                f"'{self.hardware_component_name}': {exc}"
+            )
+            return
+
+        if state_id == LifecycleState.PRIMARY_STATE_ACTIVE:
+            return
+
+        if state_id == LifecycleState.PRIMARY_STATE_UNCONFIGURED:
+            self._set_hardware_component_state_with_retry(
+                LifecycleState.PRIMARY_STATE_INACTIVE, "inactive"
+            )
+        # From INACTIVE (or just-configured) → ACTIVE.
+        self._set_hardware_component_state_with_retry(
+            LifecycleState.PRIMARY_STATE_ACTIVE, "active"
+        )
+        self._wait_for_hardware_state(LifecycleState.PRIMARY_STATE_ACTIVE)
+        self.get_logger().info(
+            f"Re-activated hardware component '{self.hardware_component_name}' "
+            "to restore command interfaces."
+        )
+
+    def _set_hardware_component_state_with_retry(
+        self, target_id: int, target_label: str
+    ) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, self.recovery_retry_count + 1):
+            try:
+                self._set_hardware_component_state(target_id, target_label)
+                return
+            except Exception as exc:  # pylint: disable=broad-except
+                last_error = exc
+                if attempt >= self.recovery_retry_count:
+                    break
+                self.get_logger().warn(
+                    f"Hardware state transition to '{target_label}' "
+                    f"attempt {attempt}/{self.recovery_retry_count} failed: {exc}"
+                )
+                time.sleep(self.recovery_retry_interval_sec)
+        raise RuntimeError(
+            f"Hardware state transition to '{target_label}' failed after retries: {last_error}"
+        )
+
+    def _set_hardware_component_state(self, target_id: int, target_label: str) -> None:
+        if not self.set_hardware_state_client.wait_for_service(
+            timeout_sec=self.request_timeout_sec
+        ):
+            raise RuntimeError("set_hardware_component_state service is unavailable")
+        request = SetHardwareComponentState.Request()
+        request.name = self.hardware_component_name
+        request.target_state.id = target_id
+        request.target_state.label = target_label
+        response = self._await_future(
+            self.set_hardware_state_client.call_async(request),
+            self.request_timeout_sec,
+        )
+        if not response.ok:
+            raise RuntimeError(
+                f"set_hardware_component_state returned ok=False for "
+                f"target='{target_label}', actual state id={response.state.id}, "
+                f"label='{response.state.label}'"
+            )
+
+    def _get_hardware_component_state_id(self) -> int:
+        components = self._list_hardware_components()
+        if self.hardware_component_name not in components:
+            raise RuntimeError(
+                f"Hardware component '{self.hardware_component_name}' not found. "
+                f"Known: {list(components.keys())}"
+            )
+        return components[self.hardware_component_name]
+
+    def _list_hardware_components(self) -> dict[str, int]:
+        if not self.list_hardware_client.wait_for_service(
+            timeout_sec=self.request_timeout_sec
+        ):
+            raise RuntimeError("list_hardware_components service is unavailable")
+        response = self._await_future(
+            self.list_hardware_client.call_async(ListHardwareComponents.Request()),
+            self.request_timeout_sec,
+        )
+        return {component.name: component.state.id for component in response.component}
+
+    def _wait_for_hardware_state(self, target_id: int) -> None:
+        deadline = time.time() + self.controller_switch_timeout_sec
+        last_id = None
+        while time.time() < deadline:
+            last_id = self._get_hardware_component_state_id()
+            if last_id == target_id:
+                return
+            time.sleep(self.hardware_state_poll_interval_sec)
+        raise RuntimeError(
+            f"Hardware component '{self.hardware_component_name}' did not reach "
+            f"state id={target_id} (last observed id={last_id})"
+        )
 
     def _restart_impedance_controller(self) -> None:
         # If the pre-recovery deactivation was rejected (typical when effort
