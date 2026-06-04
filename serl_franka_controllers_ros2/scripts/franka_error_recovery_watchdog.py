@@ -182,6 +182,7 @@ class FrankaErrorRecoveryWatchdog(Node):
         self._last_state_error_signature = ""
         self._latest_o_t_ee_pose: Pose | None = None
         self._latest_o_t_ee_frame: str = ""
+        self._latest_joint_positions: List[float] | None = None
         self._latest_o_t_ee_lock = threading.Lock()
         self._start_wall_time = time.time()
         self._log_file_offsets: dict[Path, int] = {}
@@ -250,6 +251,8 @@ class FrankaErrorRecoveryWatchdog(Node):
         with self._latest_o_t_ee_lock:
             self._latest_o_t_ee_pose = msg.o_t_ee.pose
             self._latest_o_t_ee_frame = msg.o_t_ee.header.frame_id
+            if msg.measured_joint_state.position:
+                self._latest_joint_positions = list(msg.measured_joint_state.position)
 
         if not self.enabled:
             return
@@ -293,6 +296,7 @@ class FrankaErrorRecoveryWatchdog(Node):
                 "Detected Franka reflex/error; starting automatic recovery. "
                 f"source={source}, trigger='{trigger_text[:240]}'"
             )
+            self._log_joint_limit_diagnostics()
             self._publish_recovering(True)
             if self.pre_recovery_delay_sec > 0.0:
                 time.sleep(self.pre_recovery_delay_sec)
@@ -320,6 +324,59 @@ class FrankaErrorRecoveryWatchdog(Node):
             self._publish_recovering(False)
             with self._lock:
                 self._recovery_running = False
+
+    # FR3 joint position limits in radians (joint 4 and joint 6 are asymmetric).
+    # Source: Franka FR3 datasheet / official URDF.
+    _FR3_JOINT_LIMITS = [
+        (-2.7437, 2.7437),
+        (-1.7837, 1.7837),
+        (-2.9007, 2.9007),
+        (-3.0421, -0.1518),
+        (-2.8065, 2.8065),
+        (0.5445, 4.5169),
+        (-3.0159, 3.0159),
+    ]
+    _NEAR_LIMIT_MARGIN_RAD = 0.10  # ~5.7 deg
+
+    def _log_joint_limit_diagnostics(self) -> None:
+        with self._latest_o_t_ee_lock:
+            q = list(self._latest_joint_positions) if self._latest_joint_positions else None
+        if q is None or len(q) != 7:
+            self.get_logger().warn(
+                "Joint-limit diagnostic skipped: no measured_joint_state cached yet."
+            )
+            return
+
+        rows: List[str] = []
+        flagged: List[str] = []
+        for i, (lo, hi) in enumerate(self._FR3_JOINT_LIMITS):
+            qi = q[i]
+            margin_lo = qi - lo
+            margin_hi = hi - qi
+            nearest = "lo" if margin_lo < margin_hi else "hi"
+            margin = min(margin_lo, margin_hi)
+            tag = ""
+            if margin < self._NEAR_LIMIT_MARGIN_RAD:
+                tag = "  <-- NEAR LIMIT"
+                flagged.append(
+                    f"q{i + 1}={qi:+.4f} rad ({qi * 57.2958:+.1f} deg), "
+                    f"margin_{nearest}={margin:+.4f} rad"
+                )
+            rows.append(
+                f"  q{i + 1}={qi:+.4f} rad ({qi * 57.2958:+.1f} deg)  "
+                f"limits=[{lo:+.4f}, {hi:+.4f}]  "
+                f"margin_lo={margin_lo:+.4f}  margin_hi={margin_hi:+.4f}{tag}"
+            )
+
+        header = "FR3 joint state at reflex time:\n" + "\n".join(rows)
+        if flagged:
+            header += (
+                "\nNEAR-LIMIT JOINTS (margin < "
+                f"{self._NEAR_LIMIT_MARGIN_RAD:.3f} rad): " + "; ".join(flagged)
+            )
+            self.get_logger().error(header)
+        else:
+            self.get_logger().info(header)
 
     def _clear_error_with_retries(self) -> None:
         last_error = None
