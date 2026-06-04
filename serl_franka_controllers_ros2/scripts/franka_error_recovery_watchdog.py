@@ -293,12 +293,49 @@ class FrankaErrorRecoveryWatchdog(Node):
         self._await_future(result_future, self.request_timeout_sec)
 
     def _restart_impedance_controller(self) -> None:
-        self._switch_controllers([self.impedance_controller], self._controllers_to_deactivate())
+        # If the pre-recovery deactivation was rejected (typical when effort
+        # interfaces are "Not available" during the reflex), the impedance
+        # controller is still reported as "active" but has lost its live
+        # command-interface binding. An activate call would then be a no-op
+        # and _wait_for_controller_state would pass immediately on the stale
+        # state. Force a real deactivate -> activate cycle in that case.
+        states = self._list_controller_states()
+        if states.get(self.impedance_controller) == "active":
+            deactivate_list = self._unique_controller_names(
+                [self.impedance_controller] + self._controllers_to_deactivate()
+            )
+            self._switch_controllers_with_retry([], deactivate_list)
+            self._wait_for_controller_state(self.impedance_controller, "inactive")
+            self.get_logger().info(
+                f"Deactivated stale impedance controller before re-activation: {deactivate_list}"
+            )
+
+        self._switch_controllers_with_retry(
+            [self.impedance_controller], self._controllers_to_deactivate()
+        )
         self._wait_for_controller_state(self.impedance_controller, "active")
         self.get_logger().info(
-            "Impedance controller restart requested "
+            "Impedance controller restart succeeded "
             f"activate={[self.impedance_controller]}, deactivate={self._controllers_to_deactivate()}"
         )
+
+    def _switch_controllers_with_retry(
+        self, activate: List[str], deactivate: List[str]
+    ) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, self.recovery_retry_count + 1):
+            try:
+                self._switch_controllers(activate, deactivate)
+                return
+            except Exception as exc:  # pylint: disable=broad-except
+                last_error = exc
+                if attempt >= self.recovery_retry_count:
+                    break
+                self.get_logger().warn(
+                    f"Switch controllers attempt {attempt}/{self.recovery_retry_count} failed: {exc}"
+                )
+                time.sleep(self.recovery_retry_interval_sec)
+        raise RuntimeError(f"Failed to switch controllers after retries: {last_error}")
 
     def _switch_controllers(self, activate: List[str], deactivate: List[str]) -> None:
         if not self.switch_controller_client.wait_for_service(timeout_sec=self.request_timeout_sec):
