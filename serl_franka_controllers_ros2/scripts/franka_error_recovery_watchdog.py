@@ -22,9 +22,10 @@ from controller_manager_msgs.srv import (
 )
 from franka_msgs.action import ErrorRecovery
 from franka_msgs.msg import FrankaRobotState
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose
 from lifecycle_msgs.msg import State as LifecycleState
 from rcl_interfaces.msg import Log
+from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
 from std_msgs.msg import Bool
 
 
@@ -54,8 +55,8 @@ class FrankaErrorRecoveryWatchdog(Node):
             "cartesian_impedance_controller/equilibrium_pose",
         )
         self.declare_parameter("republish_equilibrium_after_recovery", True)
-        self.declare_parameter("equilibrium_republish_count", 5)
-        self.declare_parameter("equilibrium_republish_interval_sec", 0.05)
+        self.declare_parameter("equilibrium_republish_count", 50)
+        self.declare_parameter("equilibrium_republish_interval_sec", 0.01)
         self.declare_parameter("trigger_patterns", [
             "motion aborted by reflex",
             "communication_constraints_violation",
@@ -158,7 +159,9 @@ class FrankaErrorRecoveryWatchdog(Node):
             SetHardwareComponentState, set_hardware_state_service
         )
         self.recovering_pub = self.create_publisher(Bool, self.recovering_topic, 10)
-        self.equilibrium_pub = self.create_publisher(PoseStamped, self.equilibrium_pose_topic, 10)
+        self.equilibrium_pub = self.create_publisher(
+            CartesianImpedanceCommand, self.equilibrium_pose_topic, 10
+        )
 
         qos = QoSProfile(
             depth=100,
@@ -177,7 +180,8 @@ class FrankaErrorRecoveryWatchdog(Node):
         self._recovery_running = False
         self._last_recovery_start = 0.0
         self._last_state_error_signature = ""
-        self._latest_o_t_ee: PoseStamped | None = None
+        self._latest_o_t_ee_pose: Pose | None = None
+        self._latest_o_t_ee_frame: str = ""
         self._latest_o_t_ee_lock = threading.Lock()
         self._start_wall_time = time.time()
         self._log_file_offsets: dict[Path, int] = {}
@@ -244,7 +248,8 @@ class FrankaErrorRecoveryWatchdog(Node):
 
     def _franka_state_callback(self, msg: FrankaRobotState) -> None:
         with self._latest_o_t_ee_lock:
-            self._latest_o_t_ee = msg.o_t_ee
+            self._latest_o_t_ee_pose = msg.o_t_ee.pose
+            self._latest_o_t_ee_frame = msg.o_t_ee.header.frame_id
 
         if not self.enabled:
             return
@@ -490,27 +495,34 @@ class FrankaErrorRecoveryWatchdog(Node):
 
     def _resync_equilibrium_to_current_pose(self) -> None:
         # After hardware/controller restart, the impedance controller's
-        # on_activate seeds its target with the current pose — but the teleop
-        # client typically resumes sending stale /pose commands immediately,
-        # overwriting that seed. Re-publishing the current pose a few times
-        # right after restart wins that race and keeps the new target close to
-        # the robot's actual position, avoiding an instant joint-velocity
-        # violation that would re-trigger the reflex.
+        # on_activate seeds its target with the current pose, but the teleop
+        # client keeps sending stale /pose commands at ~30 Hz, overwriting that
+        # seed within milliseconds. Re-publishing the current pose right after
+        # restart wins that race so the new target stays at the robot's actual
+        # position, preventing an instant joint-velocity violation that would
+        # re-trigger the reflex.
+        #
+        # NOTE: this topic uses the project-specific CartesianImpedanceCommand
+        # message (not PoseStamped). Publishing the wrong type silently drops
+        # the message — match what serl_franka_http_server.py:191 publishes.
         with self._latest_o_t_ee_lock:
-            pose = self._latest_o_t_ee
+            pose = self._latest_o_t_ee_pose
+            frame = self._latest_o_t_ee_frame
         if pose is None:
             self.get_logger().warn(
                 "Skipping equilibrium resync: no robot_state message received yet."
             )
             return
 
-        resync = PoseStamped()
-        resync.header.stamp = self.get_clock().now().to_msg()
-        resync.header.frame_id = pose.header.frame_id
-        resync.pose = pose.pose
+        msg = CartesianImpedanceCommand()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = frame
+        msg.pose = pose
+        msg.has_master_q = False
+        msg.master_q = [0.0] * 7
 
         for _ in range(self.equilibrium_republish_count):
-            self.equilibrium_pub.publish(resync)
+            self.equilibrium_pub.publish(msg)
             time.sleep(self.equilibrium_republish_interval_sec)
 
         self.get_logger().info(
