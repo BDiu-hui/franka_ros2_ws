@@ -1,10 +1,10 @@
 """HDF5 data recorder for dual-arm Quest3 impedance teleop.
 
 Subscribes to per-arm equilibrium (`cmds`) and current poses, gripper joint
-states, and Quest3 buttons. Pulls camera frames directly from RealSense via
-the local RealSenseManager. Press the configured left trigger (default
-``leftTrig``) to start a new episode and the right trigger (default
-``rightTrig``) to stop and save it as ``episode_<N>.hdf5``.
+states, and Quest3 buttons. Pulls camera frames directly from V4L2/UVC
+fish-eye cameras via the local FishEyeManager. Press the configured left
+trigger (default ``leftTrig``) to start a new episode and the right trigger
+(default ``rightTrig``) to stop and save it as ``episode_<N>.hdf5``.
 """
 
 from __future__ import annotations
@@ -26,10 +26,11 @@ from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
-from quest3_oculus_rviz.realsense_manager import REALSENSE_CONFIG, RealSenseManager
+from quest3_oculus_rviz.fish_eye_manager import FishEyeManager
 
 
 ARM_NAMES_DEFAULT = ["left", "right"]
+CAMERA_NAMES_DEFAULT = ["front"]
 
 
 class Quest3DataRecorderNode(Node):
@@ -46,12 +47,18 @@ class Quest3DataRecorderNode(Node):
         self.declare_parameter("trigger_threshold", 0.5)
 
         self.declare_parameter("require_cameras", True)
-        self.declare_parameter("image_width", 640)
-        self.declare_parameter("image_height", 480)
+        self.declare_parameter("image_width", 1280)
+        self.declare_parameter("image_height", 720)
         self.declare_parameter("image_fps", 30)
-        # Two parallel string arrays so ROS2 parameter typing stays happy.
-        self.declare_parameter("camera_names", list(REALSENSE_CONFIG.keys()))
-        self.declare_parameter("camera_serials", list(REALSENSE_CONFIG.values()))
+        self.declare_parameter("image_fourcc", "MJPG")
+        self.declare_parameter("warmup_frames", 10)
+        # Fish-eye cameras are matched on V4L2 usb_path/serial/stream_index,
+        # declared per-camera (same flattening trick as the arm topics below).
+        self.declare_parameter("camera_names", CAMERA_NAMES_DEFAULT)
+        for name in CAMERA_NAMES_DEFAULT:
+            self.declare_parameter(f"{name}.usb_path", "")
+            self.declare_parameter(f"{name}.serial", "")
+            self.declare_parameter(f"{name}.stream_index", 0)
 
         self.declare_parameter("arm_names", ARM_NAMES_DEFAULT)
         for name in ARM_NAMES_DEFAULT:
@@ -79,12 +86,31 @@ class Quest3DataRecorderNode(Node):
         self.image_width = int(self.get_parameter("image_width").value)
         self.image_height = int(self.get_parameter("image_height").value)
         self.image_fps = int(self.get_parameter("image_fps").value)
+        self.image_fourcc = str(self.get_parameter("image_fourcc").value)
+        self.warmup_frames = int(self.get_parameter("warmup_frames").value)
 
         cam_names = [str(x) for x in self.get_parameter("camera_names").value]
-        cam_serials = [str(x) for x in self.get_parameter("camera_serials").value]
-        if len(cam_names) != len(cam_serials):
-            raise ValueError("camera_names and camera_serials must have the same length")
-        self.cameras_cfg = dict(zip(cam_names, cam_serials))
+        if not cam_names:
+            raise ValueError("camera_names must not be empty")
+        # name -> {usb_path?, serial?, stream_index} device selector for FishEyeManager.
+        self.cameras_cfg: dict[str, dict[str, Any]] = {}
+        for name in cam_names:
+            for key, default in (("usb_path", ""), ("serial", ""), ("stream_index", 0)):
+                if not self.has_parameter(f"{name}.{key}"):
+                    self.declare_parameter(f"{name}.{key}", default)
+            usb_path = str(self.get_parameter(f"{name}.usb_path").value)
+            serial = str(self.get_parameter(f"{name}.serial").value)
+            stream_index = int(self.get_parameter(f"{name}.stream_index").value)
+            device_cfg: dict[str, Any] = {"stream_index": stream_index}
+            if usb_path:
+                device_cfg["usb_path"] = usb_path
+            if serial:
+                device_cfg["serial"] = serial
+            if self.require_cameras and "usb_path" not in device_cfg and "serial" not in device_cfg:
+                raise ValueError(
+                    f"camera '{name}' requires usb_path or serial when require_cameras=true"
+                )
+            self.cameras_cfg[name] = device_cfg
 
         self.arm_names = [str(x) for x in self.get_parameter("arm_names").value]
         if not self.arm_names:
@@ -150,10 +176,14 @@ class Quest3DataRecorderNode(Node):
             String, self.buttons_topic, self._buttons_callback, 10
         )
 
-        self.realsense_manager: RealSenseManager | None = None
+        self.camera_manager: FishEyeManager | None = None
         if self.require_cameras:
-            self.realsense_manager = RealSenseManager(
-                width=self.image_width, height=self.image_height, fps=self.image_fps
+            self.camera_manager = FishEyeManager(
+                width=self.image_width,
+                height=self.image_height,
+                fps=self.image_fps,
+                fourcc=self.image_fourcc,
+                warmup_frames=self.warmup_frames,
             )
 
         self._worker = threading.Thread(target=self._recording_worker, daemon=True)
@@ -171,8 +201,8 @@ class Quest3DataRecorderNode(Node):
         self._stop_event.set()
         if self._worker.is_alive():
             self._worker.join(timeout=5.0)
-        if self.realsense_manager is not None:
-            self.realsense_manager.stop_all()
+        if self.camera_manager is not None:
+            self.camera_manager.stop_all()
         return super().destroy_node()
 
     # ---- callbacks -----------------------------------------------------
@@ -259,15 +289,21 @@ class Quest3DataRecorderNode(Node):
     # ---- recording worker ---------------------------------------------
 
     def _recording_worker(self) -> None:
-        if self.realsense_manager is not None:
-            ok = self.realsense_manager.initialize_all(self.cameras_cfg)
+        if self.camera_manager is not None:
+            try:
+                ok = self.camera_manager.initialize_all(self.cameras_cfg)
+            except Exception as e:
+                self.get_logger().error(
+                    f"FishEyeManager.initialize_all failed; recording disabled: {e}"
+                )
+                return
             if not ok:
                 self.get_logger().error(
-                    "RealSenseManager.initialize_all failed; recording disabled"
+                    "FishEyeManager.initialize_all returned no cameras; recording disabled"
                 )
                 return
             self.get_logger().info(
-                f"RealSense cameras ready: {list(self.realsense_manager.cameras.keys())}"
+                f"fish_eye cameras ready: {list(self.camera_manager.cameras.keys())}"
             )
 
         period = 1.0 / self.recording_rate_hz
@@ -282,8 +318,8 @@ class Quest3DataRecorderNode(Node):
                 self.get_logger().info("recording started")
 
             frames: dict[str, np.ndarray] = {}
-            if self.realsense_manager is not None:
-                frames = self.realsense_manager.get_all_frames()
+            if self.camera_manager is not None:
+                frames = self.camera_manager.get_all_frames()
 
             if self._recording:
                 snapshot_ok = self._append_sample(frames)
@@ -329,7 +365,7 @@ class Quest3DataRecorderNode(Node):
                 )
                 return False
 
-        if self.realsense_manager is not None:
+        if self.camera_manager is not None:
             for cam in self.cameras_cfg:
                 if cam not in frames:
                     self.get_logger().warn(

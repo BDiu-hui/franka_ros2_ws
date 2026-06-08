@@ -310,11 +310,13 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 依赖：
 
 ```bash
-pip install pyrealsense2 h5py
+sudo apt install python3-opencv v4l-utils
+pip install h5py
 ```
 
-(`h5py`/`scipy` 在 `package.xml` 里走 rosdep，`pyrealsense2` 无 rosdep key
-需要 pip 安装。)
+(`h5py`/`scipy`/`python3-opencv` 在 `package.xml` 里走 rosdep。相机改用 V4L2/UVC
+鱼眼相机，通过 OpenCV (`cv2.VideoCapture` + `CAP_V4L2`) 抓帧，不再依赖
+`pyrealsense2`。)
 
 运行：
 
@@ -345,15 +347,27 @@ episode_N.hdf5
     │   ├── left   (T,)   float32   # 两指 position 之和 (m)
     │   └── right  (T,)   float32
     └── images
-        ├── back   (T, H, W, 3) uint8   # BGR8
-        └── front  (T, H, W, 3) uint8
+        └── front  (T, H, W, 3) uint8   # BGR8
 ```
 
 `cmds` 来自摇操节点发出的 `equilibrium_pose`，`cartesian_poses` 来自
 `franka_robot_state_broadcaster/current_pose`，`gripper_width` 来自
-`franka_gripper/joint_states`，`images/<cam>` 通过 `pyrealsense2` 直接抓取，
-不经 ROS。相机默认 serial 与 easy_dp 一致 (`back=419122270393`, `front=419122270479`)，
-分辨率 640x480 @30 FPS，可在 `config/data_recorder.yaml` 修改。
+`franka_gripper/joint_states`，`images/<cam>` 通过 OpenCV V4L2 直接抓取，
+不经 ROS。相机为 USB 鱼眼相机，按 `usb_path`（或 `serial`）+ `stream_index`
+匹配 V4L2 设备，默认分辨率 1280x720 @30 FPS、`MJPG`，可在
+`config/data_recorder.yaml` 修改。`camera_names` 列出要录的相机，每个相机用
+同名块给出 `usb_path`/`serial`/`stream_index`：
+
+```yaml
+camera_names: ["front"]
+front:
+  usb_path: "1-8.3"   # v4l2-ctl --list-devices 查到的 usb 拓扑路径
+  serial: ""          # 或改用 serial 匹配，二选一
+  stream_index: 0
+```
+
+用 `v4l2-ctl --list-devices` 或查看 `/sys/class/video4linux/video*/device`
+找到对应的 `usb_path`。
 
 mock 干跑（无相机、无机器人）：
 

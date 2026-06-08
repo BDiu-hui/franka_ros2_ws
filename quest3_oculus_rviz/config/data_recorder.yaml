@@ -10,18 +10,27 @@ quest3_data_recorder:
     trigger_threshold: 0.5
 
     require_cameras: true
-    image_width: 640
-    image_height: 480
+    image_width: 1280
+    image_height: 720
     image_fps: 30
-    camera_names: ["back", "front"]
-    camera_serials: ["419122270393", "419122270479"]
+    image_fourcc: MJPG
+    warmup_frames: 10
+    # Fish-eye (V4L2/UVC) cameras matched by usb_path or serial + stream_index.
+    # Find usb_path via `v4l2-ctl --list-devices` (or check /sys/class/video4linux).
+    camera_names: ["right_camera"]
 
-    arm_names: ["left", "right"]
+    right_camera:
+      usb_path: "1-8.3"
+      serial: ""
+      stream_index: 0
 
-    left:
-      cmd_topic: /left/cartesian_impedance_controller/equilibrium_pose
-      current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
-      gripper_joint_states_topic: /left/franka_gripper/joint_states
+    #arm_names: ["left", "right"]
+    arm_names: ["right"]
+
+    #left:
+    #  cmd_topic: /left/cartesian_impedance_controller/equilibrium_pose
+    #  current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
+    #  gripper_joint_states_topic: /left/franka_gripper/joint_states
 
     right:
       cmd_topic: /right/cartesian_impedance_controller/equilibrium_pose
