@@ -10,6 +10,7 @@ from geometry_msgs.msg import PoseStamped, TwistStamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
 from std_msgs.msg import Bool, String
 from tf_transformations import quaternion_from_matrix, quaternion_matrix
 
@@ -234,7 +235,11 @@ class SimpleQuestImpedanceTeleopNode(Node):
             self.recovery_status_callback,
             10,
         )
-        self.target_pose_pub = self.create_publisher(PoseStamped, self.target_pose_topic, 10)
+        self.target_pose_pub = self.create_publisher(
+            CartesianImpedanceCommand,
+            self.target_pose_topic,
+            10,
+        )
         self.raw_pose_pub = self.create_publisher(PoseStamped, self.raw_pose_topic, 10)
         self.enabled_pub = self.create_publisher(Bool, self.enabled_topic, 10)
         self.delta_pub = self.create_publisher(TwistStamped, self.delta_topic, 10)
@@ -611,21 +616,22 @@ class SimpleQuestImpedanceTeleopNode(Node):
         return False
 
     def _publish_target_pose(self, stamp: Any) -> None:
-        pose = PoseStamped()
-        pose.header.stamp = stamp
-        pose.header.frame_id = self.base_frame
-        pose.pose.position.x = float(self.target_position[0])
-        pose.pose.position.y = float(self.target_position[1])
-        pose.pose.position.z = float(self.target_position[2])
+        command = CartesianImpedanceCommand()
+        command.header.stamp = stamp
+        command.header.frame_id = self.base_frame
+        command.pose.position.x = float(self.target_position[0])
+        command.pose.position.y = float(self.target_position[1])
+        command.pose.position.z = float(self.target_position[2])
 
         transform = np.eye(4)
         transform[:3, :3] = self.target_rotation
         quat = quaternion_from_matrix(transform)
-        pose.pose.orientation.x = float(quat[0])
-        pose.pose.orientation.y = float(quat[1])
-        pose.pose.orientation.z = float(quat[2])
-        pose.pose.orientation.w = float(quat[3])
-        self.target_pose_pub.publish(pose)
+        command.pose.orientation.x = float(quat[0])
+        command.pose.orientation.y = float(quat[1])
+        command.pose.orientation.z = float(quat[2])
+        command.pose.orientation.w = float(quat[3])
+        command.has_master_q = False
+        self.target_pose_pub.publish(command)
 
     def _publish_raw_pose(self, stamp: Any, position: np.ndarray, rotation: np.ndarray) -> None:
         pose = PoseStamped()

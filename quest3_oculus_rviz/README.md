@@ -204,10 +204,13 @@ target_position = clamp(target_position + delta_p_tcp)
 target_rotation = Exp(delta_rotvec_tcp) * target_rotation
 ```
 
-然后发布:
+然后封装为阻抗控制器要求的自定义消息并发布:
 
 ```text
-PoseStamped(header.frame_id = base_frame)
+serl_franka_controllers_ros2/CartesianImpedanceCommand
+  header.frame_id = base_frame
+  pose = target TCP pose
+  has_master_q = false
   -> /cartesian_impedance_controller/equilibrium_pose
 ```
 
