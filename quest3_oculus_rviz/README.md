@@ -308,6 +308,161 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
   mock:=true
 ```
 
+## 数据记录 (HDF5)
+
+`data_recorder_node` 在双臂阻抗摇操运行时把数据落盘为 `episode_<N>.hdf5`。
+触发：左手柄 `leftTrig` 开始一个 episode，右手柄 `rightTrig` 停止并保存。
+仅支持双臂场景。
+
+依赖：
+
+```bash
+sudo apt install python3-opencv v4l-utils
+pip install h5py
+```
+
+(`h5py`/`scipy`/`python3-opencv` 在 `package.xml` 里走 rosdep。相机改用 V4L2/UVC
+鱼眼相机，通过 OpenCV (`cv2.VideoCapture` + `CAP_V4L2`) 抓帧，不再依赖
+`pyrealsense2`。)
+
+运行：
+
+```bash
+# 终端 1：双臂阻抗摇操
+ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py
+
+# 终端 2：起记录器
+ros2 launch quest3_oculus_rviz data_recorder.launch.py \
+  out_data_dir:=/data/quest3_recordings
+```
+
+按 leftTrig 开始 → 摇操几秒 → 按 rightTrig 停止 → 在 `out_data_dir` 下生成
+`episode_0.hdf5`，下次自动从 `episode_1.hdf5` 续号。
+
+HDF5 结构：
+
+```
+episode_N.hdf5
+├── cmds
+│   ├── left   (T, 6) float32  # x,y,z (m) + rz,ry,rx (deg)
+│   └── right  (T, 6) float32
+└── observations
+    ├── cartesian_poses
+    │   ├── left   (T, 6) float32
+    │   └── right  (T, 6) float32
+    ├── gripper_width
+    │   ├── left   (T,)   float32   # 两指 position 之和 (m)
+    │   └── right  (T,)   float32
+    └── images
+        └── front  (T, H, W, 3) uint8   # BGR8
+```
+
+`cmds` 来自摇操节点发出的 `equilibrium_pose`，`cartesian_poses` 来自
+`franka_robot_state_broadcaster/current_pose`，`gripper_width` 来自
+`franka_gripper/joint_states`，`images/<cam>` 通过 OpenCV V4L2 直接抓取，
+不经 ROS。相机为 USB 鱼眼相机，按 `usb_path`（或 `serial`）+ `stream_index`
+匹配 V4L2 设备，默认分辨率 1280x720 @30 FPS、`MJPG`，可在
+`config/data_recorder.yaml` 修改。`camera_names` 列出要录的相机，每个相机用
+同名块给出 `usb_path`/`serial`/`stream_index`：
+
+```yaml
+camera_names: ["front"]
+front:
+  usb_path: "1-8.3"   # v4l2-ctl --list-devices 查到的 usb 拓扑路径
+  serial: ""          # 或改用 serial 匹配，二选一
+  stream_index: 0
+```
+
+用 `v4l2-ctl --list-devices` 或查看 `/sys/class/video4linux/video*/device`
+找到对应的 `usb_path`。
+
+mock 干跑（无相机、无机器人）：
+
+```bash
+ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
+  mock:=true start_left_arm:=false start_right_arm:=false
+ros2 launch quest3_oculus_rviz data_recorder.launch.py require_cameras:=false
+```
+
+防止内存爆掉：`max_episode_sec` 默认 60 s，超时会自动 stop 并保存。
+
+## 数据记录 (HDF5)
+
+`data_recorder_node` 在双臂阻抗摇操运行时把数据落盘为 `episode_<N>.hdf5`。
+触发：左手柄 `leftTrig` 开始一个 episode，右手柄 `rightTrig` 停止并保存。
+仅支持双臂场景。
+
+依赖：
+
+```bash
+pip install pyrealsense2 h5py
+```
+
+(`h5py`/`scipy`/`python3-opencv` 在 `package.xml` 里走 rosdep。相机改用 V4L2/UVC
+鱼眼相机，通过 OpenCV (`cv2.VideoCapture` + `CAP_V4L2`) 抓帧，不再依赖
+`pyrealsense2`。)
+
+运行：
+
+```bash
+# 终端 1：双臂阻抗摇操
+ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py
+
+# 终端 2：起记录器
+ros2 launch quest3_oculus_rviz data_recorder.launch.py \
+  out_data_dir:=/data/quest3_recordings
+```
+
+按 leftTrig 开始 → 摇操几秒 → 按 rightTrig 停止 → 在 `out_data_dir` 下生成
+`episode_0.hdf5`，下次自动从 `episode_1.hdf5` 续号。
+
+HDF5 结构：
+
+```
+episode_N.hdf5
+├── cmds
+│   ├── left   (T, 6) float32  # x,y,z (m) + rz,ry,rx (deg)
+│   └── right  (T, 6) float32
+└── observations
+    ├── cartesian_poses
+    │   ├── left   (T, 6) float32
+    │   └── right  (T, 6) float32
+    ├── gripper_width
+    │   ├── left   (T,)   float32   # 两指 position 之和 (m)
+    │   └── right  (T,)   float32
+    └── images
+        └── front  (T, H, W, 3) uint8   # BGR8
+```
+
+`cmds` 来自摇操节点发出的 `equilibrium_pose`，`cartesian_poses` 来自
+`franka_robot_state_broadcaster/current_pose`，`gripper_width` 来自
+`franka_gripper/joint_states`，`images/<cam>` 通过 OpenCV V4L2 直接抓取，
+不经 ROS。相机为 USB 鱼眼相机，按 `usb_path`（或 `serial`）+ `stream_index`
+匹配 V4L2 设备，默认分辨率 1280x720 @30 FPS、`MJPG`，可在
+`config/data_recorder.yaml` 修改。`camera_names` 列出要录的相机，每个相机用
+同名块给出 `usb_path`/`serial`/`stream_index`：
+
+```yaml
+camera_names: ["front"]
+front:
+  usb_path: "1-8.3"   # v4l2-ctl --list-devices 查到的 usb 拓扑路径
+  serial: ""          # 或改用 serial 匹配，二选一
+  stream_index: 0
+```
+
+用 `v4l2-ctl --list-devices` 或查看 `/sys/class/video4linux/video*/device`
+找到对应的 `usb_path`。
+
+mock 干跑（无相机、无机器人）：
+
+```bash
+ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
+  mock:=true start_left_arm:=false start_right_arm:=false
+ros2 launch quest3_oculus_rviz data_recorder.launch.py require_cameras:=false
+```
+
+防止内存爆掉：`max_episode_sec` 默认 60 s，超时会自动 stop 并保存。
+
 ## 安全注意
 
 - 控制真实机械臂前，确认急停、工作空间、人员位置和机器人错误状态。

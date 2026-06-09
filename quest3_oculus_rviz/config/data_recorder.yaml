@@ -1,0 +1,38 @@
+quest3_data_recorder:
+  ros__parameters:
+    out_data_dir: /tmp/quest3_recordings
+    recording_rate_hz: 30.0
+    max_episode_sec: 600.0
+
+    buttons_topic: /quest3/buttons
+    start_button_analog: leftTrig
+    stop_button_analog: rightTrig
+    trigger_threshold: 0.5
+
+    require_cameras: true
+    image_width: 1280
+    image_height: 720
+    image_fps: 30
+    image_fourcc: MJPG
+    warmup_frames: 10
+    # Fish-eye (V4L2/UVC) cameras matched by usb_path or serial + stream_index.
+    # Find usb_path via `v4l2-ctl --list-devices` (or check /sys/class/video4linux).
+    camera_names: ["right_camera"]
+
+    right_camera:
+      usb_path: "1-8.3"
+      serial: ""
+      stream_index: 0
+
+    #arm_names: ["left", "right"]
+    arm_names: ["right"]
+
+    #left:
+    #  cmd_topic: /left/cartesian_impedance_controller/equilibrium_pose
+    #  current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
+    #  gripper_joint_states_topic: /left/franka_gripper/joint_states
+
+    right:
+      cmd_topic: /right/cartesian_impedance_controller/equilibrium_pose
+      current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
+      gripper_joint_states_topic: /right/franka_gripper/joint_states
