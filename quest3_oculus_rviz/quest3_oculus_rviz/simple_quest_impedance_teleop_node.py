@@ -246,12 +246,14 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.debug_pub = self.create_publisher(String, self.debug_topic, 10)
 
         self.reader = None
+        self.buttons_pub = None
         if self.input_mode == "reader":
             from oculus_reader.reader import OculusReader
 
             self.OculusReader = OculusReader
             self.reader_ip = self.ip_address if self.ip_address else None
             self.reader = self._create_reader()
+            self.buttons_pub = self.create_publisher(String, self.buttons_topic, 10)
         else:
             self.pose_sub = self.create_subscription(
                 PoseStamped,
@@ -386,6 +388,10 @@ class SimpleQuestImpedanceTeleopNode(Node):
         raw_transforms, raw_buttons = self._read_raw_quest_data(now)
         raw_transforms = raw_transforms or {}
         raw_buttons = raw_buttons or {}
+        if self.buttons_pub is not None:
+            buttons_msg = String()
+            buttons_msg.data = json.dumps(self._to_jsonable(raw_buttons), sort_keys=True)
+            self.buttons_pub.publish(buttons_msg)
         self.last_raw_transform_keys = sorted(raw_transforms.keys())
         self.last_raw_button_keys = sorted(raw_buttons.keys())
         self.using_cached_quest_pose = False

@@ -43,9 +43,9 @@ source setup_env.bash
 ```bash
 source setup_env.bash
 ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
-  robot_ip:=172.16.0.2 \
+  robot_ip:=172.16.0.3 \
   robot_type:=fr3 \
-  load_gripper:=true \
+  load_gripper:=false \
   start_rviz:=false
 ```
 
@@ -311,7 +311,7 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 ## 数据记录 (HDF5)
 
 `data_recorder_node` 在双臂阻抗摇操运行时把数据落盘为 `episode_<N>.hdf5`。
-触发：左手柄 `leftTrig` 开始一个 episode，右手柄 `rightTrig` 停止并保存。
+触发：右手柄 `A` 键开始一个 episode，`B` 键停止并保存。
 仅支持双臂场景。
 
 依赖：
@@ -336,7 +336,7 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py \
   out_data_dir:=/data/quest3_recordings
 ```
 
-按 leftTrig 开始 → 摇操几秒 → 按 rightTrig 停止 → 在 `out_data_dir` 下生成
+按 A 开始 → 摇操几秒 → 按 B 停止 → 在 `out_data_dir` 下生成
 `episode_0.hdf5`，下次自动从 `episode_1.hdf5` 续号。
 
 HDF5 结构：
@@ -389,7 +389,7 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py require_cameras:=false
 ## 数据记录 (HDF5)
 
 `data_recorder_node` 在双臂阻抗摇操运行时把数据落盘为 `episode_<N>.hdf5`。
-触发：左手柄 `leftTrig` 开始一个 episode，右手柄 `rightTrig` 停止并保存。
+触发：右手柄 `A` 键开始一个 episode，`B` 键停止并保存。
 仅支持双臂场景。
 
 依赖：
@@ -413,7 +413,7 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py \
   out_data_dir:=/data/quest3_recordings
 ```
 
-按 leftTrig 开始 → 摇操几秒 → 按 rightTrig 停止 → 在 `out_data_dir` 下生成
+按 A 开始 → 摇操几秒 → 按 B 停止 → 在 `out_data_dir` 下生成
 `episode_0.hdf5`，下次自动从 `episode_1.hdf5` 续号。
 
 HDF5 结构：

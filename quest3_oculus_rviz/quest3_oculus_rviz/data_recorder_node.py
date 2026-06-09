@@ -2,9 +2,9 @@
 
 Subscribes to per-arm equilibrium (`cmds`) and current poses, gripper joint
 states, and Quest3 buttons. Pulls camera frames directly from V4L2/UVC
-fish-eye cameras via the local FishEyeManager. Press the configured left
-trigger (default ``leftTrig``) to start a new episode and the right trigger
-(default ``rightTrig``) to stop and save it as ``episode_<N>.hdf5``.
+fish-eye cameras via the local FishEyeManager. Press the configured start
+button (default ``A``) to start a new episode and the stop button (default
+``B``) to stop and save it as ``episode_<N>.hdf5``.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
+from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
 from std_msgs.msg import String
 
 from quest3_oculus_rviz.fish_eye_manager import FishEyeManager
@@ -42,8 +43,8 @@ class Quest3DataRecorderNode(Node):
         self.declare_parameter("max_episode_sec", 60.0)
 
         self.declare_parameter("buttons_topic", "/quest3/buttons")
-        self.declare_parameter("start_button_analog", "leftTrig")
-        self.declare_parameter("stop_button_analog", "rightTrig")
+        self.declare_parameter("start_button_analog", "A")
+        self.declare_parameter("stop_button_analog", "B")
         self.declare_parameter("trigger_threshold", 0.5)
 
         self.declare_parameter("require_cameras", True)
@@ -159,7 +160,10 @@ class Quest3DataRecorderNode(Node):
         for name, topics in self.arm_topics.items():
             self._subs.append(
                 self.create_subscription(
-                    PoseStamped, topics["cmd"], self._make_cmd_cb(name), pose_qos
+                    CartesianImpedanceCommand,
+                    topics["cmd"],
+                    self._make_cmd_cb(name),
+                    pose_qos,
                 )
             )
             self._subs.append(
@@ -208,7 +212,9 @@ class Quest3DataRecorderNode(Node):
     # ---- callbacks -----------------------------------------------------
 
     @staticmethod
-    def _pose_to_xyz_euler(msg: PoseStamped) -> np.ndarray:
+    def _pose_to_xyz_euler(
+        msg: PoseStamped | CartesianImpedanceCommand,
+    ) -> np.ndarray:
         quat = [
             msg.pose.orientation.x,
             msg.pose.orientation.y,
@@ -223,7 +229,7 @@ class Quest3DataRecorderNode(Node):
         )
 
     def _make_cmd_cb(self, name: str):
-        def cb(msg: PoseStamped) -> None:
+        def cb(msg: CartesianImpedanceCommand) -> None:
             value = self._pose_to_xyz_euler(msg)
             with self._state_lock:
                 self._latest_cmd[name] = value
@@ -408,8 +414,8 @@ class Quest3DataRecorderNode(Node):
         for name in self.arm_names:
             n = min(n, len(self._cmd_buf[name]), len(self._current_buf[name]),
                     len(self._gripper_buf[name]))
-        for cam in self.cameras_cfg:
-            if self.cameras_cfg:
+        if self.camera_manager is not None:
+            for cam in self.cameras_cfg:
                 n = min(n, len(self._image_buf[cam]))
         if n == 0:
             self.get_logger().warn("nothing to save after alignment")

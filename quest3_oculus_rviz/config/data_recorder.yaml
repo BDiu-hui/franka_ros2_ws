@@ -5,8 +5,8 @@ quest3_data_recorder:
     max_episode_sec: 600.0
 
     buttons_topic: /quest3/buttons
-    start_button_analog: leftTrig
-    stop_button_analog: rightTrig
+    start_button_analog: A
+    stop_button_analog: B
     trigger_threshold: 0.5
 
     require_cameras: true
@@ -20,7 +20,7 @@ quest3_data_recorder:
     camera_names: ["right_camera"]
 
     right_camera:
-      usb_path: "1-8.3"
+      usb_path: "1-7.3"
       serial: ""
       stream_index: 0
 
@@ -33,6 +33,6 @@ quest3_data_recorder:
     #  gripper_joint_states_topic: /left/franka_gripper/joint_states
 
     right:
-      cmd_topic: /right/cartesian_impedance_controller/equilibrium_pose
-      current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
-      gripper_joint_states_topic: /right/franka_gripper/joint_states
+      cmd_topic: /cartesian_impedance_controller/equilibrium_pose
+      current_pose_topic: /franka_robot_state_broadcaster/current_pose
+      gripper_joint_states_topic: /franka_gripper/joint_states
