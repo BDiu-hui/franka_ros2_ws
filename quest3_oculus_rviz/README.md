@@ -311,7 +311,8 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 ## 数据记录 (HDF5)
 
 `data_recorder_node` 在双臂阻抗摇操运行时把数据落盘为 `episode_<N>.hdf5`。
-触发：右手柄 `A` 键开始一个 episode，`B` 键停止并保存。
+触发：右手柄 `A` 键开始一个 episode，`B` 键停止并保存；左手柄 `X`
+键（左手柄上与 `A` 对应的位置）删除本次运行中最近保存的 episode。
 仅支持双臂场景。
 
 依赖：
@@ -337,7 +338,8 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py \
 ```
 
 按 A 开始 → 摇操几秒 → 按 B 停止 → 在 `out_data_dir` 下生成
-`episode_0.hdf5`，下次自动从 `episode_1.hdf5` 续号。
+`episode_0.hdf5`。如果本条数据不要，按左手柄 X 删除；否则再次按 A
+开始下一条。文件编号自动从当前目录中的最大编号继续。
 
 HDF5 结构：
 
@@ -389,7 +391,8 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py require_cameras:=false
 ## 数据记录 (HDF5)
 
 `data_recorder_node` 在双臂阻抗摇操运行时把数据落盘为 `episode_<N>.hdf5`。
-触发：右手柄 `A` 键开始一个 episode，`B` 键停止并保存。
+触发：右手柄 `A` 键开始一个 episode，`B` 键停止并保存；左手柄 `X`
+键（左手柄上与 `A` 对应的位置）删除本次运行中最近保存的 episode。
 仅支持双臂场景。
 
 依赖：
@@ -414,7 +417,8 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py \
 ```
 
 按 A 开始 → 摇操几秒 → 按 B 停止 → 在 `out_data_dir` 下生成
-`episode_0.hdf5`，下次自动从 `episode_1.hdf5` 续号。
+`episode_0.hdf5`。如果本条数据不要，按左手柄 X 删除；否则再次按 A
+开始下一条。文件编号自动从当前目录中的最大编号继续。
 
 HDF5 结构：
 

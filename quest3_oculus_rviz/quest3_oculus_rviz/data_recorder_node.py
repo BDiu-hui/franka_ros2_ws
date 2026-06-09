@@ -4,7 +4,9 @@ Subscribes to per-arm equilibrium (`cmds`) and current poses, gripper joint
 states, and Quest3 buttons. Pulls camera frames directly from V4L2/UVC
 fish-eye cameras via the local FishEyeManager. Press the configured start
 button (default ``A``) to start a new episode and the stop button (default
-``B``) to stop and save it as ``episode_<N>.hdf5``.
+``B``) to stop and save it as ``episode_<N>.hdf5``. Press the configured
+delete button (default ``X``) to delete the most recently saved episode from
+the current recorder session.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ class Quest3DataRecorderNode(Node):
         self.declare_parameter("buttons_topic", "/quest3/buttons")
         self.declare_parameter("start_button_analog", "A")
         self.declare_parameter("stop_button_analog", "B")
+        self.declare_parameter("delete_button", "X")
         self.declare_parameter("trigger_threshold", 0.5)
 
         self.declare_parameter("require_cameras", True)
@@ -82,6 +85,7 @@ class Quest3DataRecorderNode(Node):
         self.buttons_topic = str(self.get_parameter("buttons_topic").value)
         self.start_button_analog = str(self.get_parameter("start_button_analog").value)
         self.stop_button_analog = str(self.get_parameter("stop_button_analog").value)
+        self.delete_button = str(self.get_parameter("delete_button").value)
         self.trigger_threshold = float(self.get_parameter("trigger_threshold").value)
         self.require_cameras = bool(self.get_parameter("require_cameras").value)
         self.image_width = int(self.get_parameter("image_width").value)
@@ -149,9 +153,12 @@ class Quest3DataRecorderNode(Node):
         self._recording = False
         self._start_event = threading.Event()
         self._stop_event = threading.Event()
+        self._delete_event = threading.Event()
         self._shutdown_event = threading.Event()
         self._prev_start_pressed = False
         self._prev_stop_pressed = False
+        self._prev_delete_pressed = False
+        self._last_saved_path: Path | None = None
 
         pose_qos = QoSProfile(depth=10)
         pose_qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -197,7 +204,8 @@ class Quest3DataRecorderNode(Node):
             "Quest3 data recorder ready. "
             f"out_data_dir={self.out_data_dir}, "
             f"arms={self.arm_names}, cameras={list(self.cameras_cfg.keys())}, "
-            f"trigger: {self.start_button_analog}=start / {self.stop_button_analog}=stop"
+            f"trigger: {self.start_button_analog}=start / "
+            f"{self.stop_button_analog}=stop / {self.delete_button}=delete-last"
         )
 
     def destroy_node(self) -> bool:
@@ -260,8 +268,10 @@ class Quest3DataRecorderNode(Node):
             return
         start_val = self._button_scalar(parsed.get(self.start_button_analog, 0.0))
         stop_val = self._button_scalar(parsed.get(self.stop_button_analog, 0.0))
+        delete_val = self._button_scalar(parsed.get(self.delete_button, 0.0))
         start_pressed = start_val >= self.trigger_threshold
         stop_pressed = stop_val >= self.trigger_threshold
+        delete_pressed = delete_val >= self.trigger_threshold
 
         # Rising-edge detection avoids re-triggering while the button is held.
         if start_pressed and not self._prev_start_pressed:
@@ -276,9 +286,16 @@ class Quest3DataRecorderNode(Node):
                 self.get_logger().info("stop trigger detected")
             else:
                 self.get_logger().warn("stop trigger ignored: not recording")
+        if delete_pressed and not self._prev_delete_pressed:
+            if self._recording:
+                self.get_logger().warn("delete trigger ignored: recording in progress")
+            else:
+                self._delete_event.set()
+                self.get_logger().info("delete-last trigger detected")
 
         self._prev_start_pressed = start_pressed
         self._prev_stop_pressed = stop_pressed
+        self._prev_delete_pressed = delete_pressed
 
     @staticmethod
     def _button_scalar(value: Any) -> float:
@@ -342,6 +359,10 @@ class Quest3DataRecorderNode(Node):
                 if self._recording:
                     self._recording = False
                     self._save_current_episode()
+
+            if self._delete_event.is_set():
+                self._delete_event.clear()
+                self._delete_last_saved_episode()
 
             elapsed = time.monotonic() - loop_start
             sleep_for = period - elapsed
@@ -459,7 +480,28 @@ class Quest3DataRecorderNode(Node):
             self.get_logger().error(f"failed to write {target}: {e}")
             return
 
+        self._last_saved_path = target
         self.get_logger().info(f"saved {target} with {n} frames")
+
+    def _delete_last_saved_episode(self) -> None:
+        target = self._last_saved_path
+        if target is None:
+            self.get_logger().warn(
+                "delete trigger ignored: no episode saved by this recorder session"
+            )
+            return
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            self._last_saved_path = None
+            self.get_logger().warn(f"delete target no longer exists: {target}")
+            return
+        except OSError as e:
+            self.get_logger().error(f"failed to delete {target}: {e}")
+            return
+
+        self._last_saved_path = None
+        self.get_logger().info(f"deleted {target}")
 
 
 def main() -> None:
