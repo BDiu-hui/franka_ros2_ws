@@ -90,9 +90,23 @@ def generate_launch_description():
     quest_ip_address = LaunchConfiguration("quest_ip_address")
     quest_port = LaunchConfiguration("quest_port")
     quest_publish_rate_hz = LaunchConfiguration("quest_publish_rate_hz")
+    start_wuji_trigger_hand = LaunchConfiguration("start_wuji_trigger_hand")
+    wuji_config_file = LaunchConfiguration("wuji_config_file")
+    left_wuji_enabled = LaunchConfiguration("left_wuji_enabled")
+    right_wuji_enabled = LaunchConfiguration("right_wuji_enabled")
+    left_wuji_serial = LaunchConfiguration("left_wuji_serial")
+    right_wuji_serial = LaunchConfiguration("right_wuji_serial")
+    wuji_dry_run = LaunchConfiguration("wuji_dry_run")
 
     default_config = PathJoinSubstitution(
         [FindPackageShare("quest3_oculus_rviz"), "config", "simple_dual_impedance_teleop.yaml"]
+    )
+    default_wuji_config = PathJoinSubstitution(
+        [
+            FindPackageShare("quest3_oculus_rviz"),
+            "config",
+            "wuji_trigger_hand.yaml",
+        ]
     )
 
     return LaunchDescription(
@@ -118,6 +132,13 @@ def generate_launch_description():
             DeclareLaunchArgument("quest_ip_address", default_value=""),
             DeclareLaunchArgument("quest_port", default_value="5555"),
             DeclareLaunchArgument("quest_publish_rate_hz", default_value="50.0"),
+            DeclareLaunchArgument("start_wuji_trigger_hand", default_value="false"),
+            DeclareLaunchArgument("wuji_config_file", default_value=default_wuji_config),
+            DeclareLaunchArgument("left_wuji_enabled", default_value="false"),
+            DeclareLaunchArgument("right_wuji_enabled", default_value="true"),
+            DeclareLaunchArgument("left_wuji_serial", default_value="auto"),
+            DeclareLaunchArgument("right_wuji_serial", default_value="auto"),
+            DeclareLaunchArgument("wuji_dry_run", default_value="false"),
             http_control_include(
                 condition=start_left_arm,
                 namespace="left",
@@ -172,6 +193,38 @@ def generate_launch_description():
                 name="right_simple_quest_impedance_teleop",
                 config_file=config_file,
                 condition=start_right_teleop,
+            ),
+            Node(
+                package="quest3_oculus_rviz",
+                executable="wuji_trigger_hand_node",
+                name="wuji_trigger_hand",
+                output="screen",
+                parameters=[
+                    wuji_config_file,
+                    {
+                        "left_enabled": ParameterValue(
+                            left_wuji_enabled,
+                            value_type=bool,
+                        ),
+                        "right_enabled": ParameterValue(
+                            right_wuji_enabled,
+                            value_type=bool,
+                        ),
+                        "left_serial": ParameterValue(
+                            left_wuji_serial,
+                            value_type=str,
+                        ),
+                        "right_serial": ParameterValue(
+                            right_wuji_serial,
+                            value_type=str,
+                        ),
+                        "dry_run": ParameterValue(
+                            wuji_dry_run,
+                            value_type=bool,
+                        ),
+                    },
+                ],
+                condition=IfCondition(start_wuji_trigger_hand),
             ),
         ]
     )

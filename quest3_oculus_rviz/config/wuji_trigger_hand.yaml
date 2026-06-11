@@ -1,0 +1,63 @@
+wuji_trigger_hand:
+  ros__parameters:
+    buttons_topic: /quest3/buttons
+
+    # Hysteresis prevents analog trigger noise from rapidly toggling poses.
+    press_threshold: 0.65
+    release_threshold: 0.35
+
+    # Release a pressed hand if Quest button messages stop arriving.
+    buttons_timeout_sec: 0.5
+    watchdog_rate_hz: 10.0
+    release_on_startup: true
+    release_on_timeout: true
+    release_on_shutdown: true
+    shutdown_release_hold_sec: 0.5
+    disable_on_shutdown: true
+    dry_run: false
+
+    # Left-hand poses have not been calibrated in this workspace.
+    # Fill both 20-value arrays, set left_pose_calibrated=true, then enable it.
+    left_enabled: false
+    left_pose_calibrated: false
+    left_serial: auto
+    left_trigger_value_name: leftTrig
+    left_trigger_button_name: LTr
+    left_released_pose:
+      [
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+      ]
+    left_closed_pose:
+      [
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+      ]
+
+    right_enabled: true
+    right_pose_calibrated: true
+    right_serial: auto
+    right_trigger_value_name: rightTrig
+    right_trigger_button_name: RTr
+    right_released_pose:
+      [
+        1.001, -0.083, -0.059, -0.188,
+        0.226, -0.114, -0.039, -0.028,
+        0.439, -0.179, -0.043, -0.138,
+        0.402, -0.143, -0.030, -0.098,
+        0.223, -0.204, 0.060, 0.338,
+      ]
+    right_closed_pose:
+      [
+        1.6, 0.165, 0.150, -0.121,
+        1.3, -0.27, 1.486, 1.274,
+        0.638, -0.089, 0.968, 0.879,
+        0.671, -0.179, 0.974, 0.931,
+        0.626, 0.054, 1.286, 1.187,
+      ]

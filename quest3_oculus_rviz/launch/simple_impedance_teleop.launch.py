@@ -38,9 +38,23 @@ def generate_launch_description():
     base_frame = LaunchConfiguration("base_frame")
     current_pose_topic = LaunchConfiguration("current_pose_topic")
     target_pose_topic = LaunchConfiguration("target_pose_topic")
+    start_wuji_trigger_hand = LaunchConfiguration("start_wuji_trigger_hand")
+    wuji_config_file = LaunchConfiguration("wuji_config_file")
+    left_wuji_enabled = LaunchConfiguration("left_wuji_enabled")
+    right_wuji_enabled = LaunchConfiguration("right_wuji_enabled")
+    left_wuji_serial = LaunchConfiguration("left_wuji_serial")
+    right_wuji_serial = LaunchConfiguration("right_wuji_serial")
+    wuji_dry_run = LaunchConfiguration("wuji_dry_run")
 
     default_config = PathJoinSubstitution(
         [FindPackageShare("quest3_oculus_rviz"), "config", "simple_impedance_teleop.yaml"]
+    )
+    default_wuji_config = PathJoinSubstitution(
+        [
+            FindPackageShare("quest3_oculus_rviz"),
+            "config",
+            "wuji_trigger_hand.yaml",
+        ]
     )
     http_control_launch = PathJoinSubstitution(
         [FindPackageShare("serl_franka_controllers_ros2"), "launch", "http_control.launch.py"]
@@ -95,6 +109,13 @@ def generate_launch_description():
                 "target_pose_topic",
                 default_value="/cartesian_impedance_controller/equilibrium_pose",
             ),
+            DeclareLaunchArgument("start_wuji_trigger_hand", default_value="false"),
+            DeclareLaunchArgument("wuji_config_file", default_value=default_wuji_config),
+            DeclareLaunchArgument("left_wuji_enabled", default_value="false"),
+            DeclareLaunchArgument("right_wuji_enabled", default_value="true"),
+            DeclareLaunchArgument("left_wuji_serial", default_value="auto"),
+            DeclareLaunchArgument("right_wuji_serial", default_value="auto"),
+            DeclareLaunchArgument("wuji_dry_run", default_value="false"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(http_control_launch),
                 launch_arguments={
@@ -139,6 +160,38 @@ def generate_launch_description():
                         "target_pose_topic": target_pose_topic,
                     },
                 ],
+            ),
+            Node(
+                package="quest3_oculus_rviz",
+                executable="wuji_trigger_hand_node",
+                name="wuji_trigger_hand",
+                output="screen",
+                parameters=[
+                    wuji_config_file,
+                    {
+                        "left_enabled": ParameterValue(
+                            left_wuji_enabled,
+                            value_type=bool,
+                        ),
+                        "right_enabled": ParameterValue(
+                            right_wuji_enabled,
+                            value_type=bool,
+                        ),
+                        "left_serial": ParameterValue(
+                            left_wuji_serial,
+                            value_type=str,
+                        ),
+                        "right_serial": ParameterValue(
+                            right_wuji_serial,
+                            value_type=str,
+                        ),
+                        "dry_run": ParameterValue(
+                            wuji_dry_run,
+                            value_type=bool,
+                        ),
+                    },
+                ],
+                condition=IfCondition(start_wuji_trigger_hand),
             ),
         ]
     )
