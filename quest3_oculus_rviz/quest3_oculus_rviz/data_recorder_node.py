@@ -20,7 +20,7 @@ from typing import Any
 import h5py
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, WrenchStamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -79,6 +79,10 @@ class Quest3DataRecorderNode(Node):
                 f"/{name}/franka_robot_state_broadcaster/current_pose",
             )
             self.declare_parameter(
+                f"{name}.wrench_topic",
+                f"/{name}/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame",
+            )
+            self.declare_parameter(
                 f"{name}.gripper_joint_states_topic",
                 f"/{name}/franka_gripper/joint_states",
             )
@@ -130,12 +134,14 @@ class Quest3DataRecorderNode(Node):
         self.arm_topics: dict[str, dict[str, str]] = {}
         for name in self.arm_names:
             # Ensure params exist for any non-default arms supplied via YAML.
-            for key in ("cmd_topic", "current_pose_topic", "gripper_joint_states_topic"):
+            for key in ("cmd_topic", "current_pose_topic", "wrench_topic",
+                        "gripper_joint_states_topic"):
                 if not self.has_parameter(f"{name}.{key}"):
                     self.declare_parameter(f"{name}.{key}", "")
             self.arm_topics[name] = {
                 "cmd": str(self.get_parameter(f"{name}.cmd_topic").value),
                 "current": str(self.get_parameter(f"{name}.current_pose_topic").value),
+                "wrench": str(self.get_parameter(f"{name}.wrench_topic").value),
                 "gripper": str(self.get_parameter(f"{name}.gripper_joint_states_topic").value),
             }
             for key, value in self.arm_topics[name].items():
@@ -148,11 +154,13 @@ class Quest3DataRecorderNode(Node):
         self._state_lock = threading.Lock()
         self._latest_cmd: dict[str, np.ndarray | None] = {n: None for n in self.arm_names}
         self._latest_current: dict[str, np.ndarray | None] = {n: None for n in self.arm_names}
+        self._latest_wrench: dict[str, np.ndarray | None] = {n: None for n in self.arm_names}
         self._latest_gripper: dict[str, float | None] = {n: None for n in self.arm_names}
 
         # Buffers are owned by the worker thread; no lock needed.
         self._cmd_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
         self._current_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
+        self._wrench_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
         self._gripper_buf: dict[str, list[float]] = {n: [] for n in self.arm_names}
         self._image_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.cameras_cfg}
 
@@ -183,6 +191,11 @@ class Quest3DataRecorderNode(Node):
             self._subs.append(
                 self.create_subscription(
                     PoseStamped, topics["current"], self._make_current_cb(name), pose_qos
+                )
+            )
+            self._subs.append(
+                self.create_subscription(
+                    WrenchStamped, topics["wrench"], self._make_wrench_cb(name), pose_qos
                 )
             )
             self._subs.append(
@@ -260,6 +273,17 @@ class Quest3DataRecorderNode(Node):
             value = self._pose_to_xyz_euler(msg)
             with self._state_lock:
                 self._latest_current[name] = value
+        return cb
+
+    def _make_wrench_cb(self, name: str):
+        def cb(msg: WrenchStamped) -> None:
+            value = np.array(
+                [msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z,
+                 msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z],
+                dtype=np.float32,
+            )
+            with self._state_lock:
+                self._latest_wrench[name] = value
         return cb
 
     def _make_gripper_cb(self, name: str):
@@ -382,7 +406,7 @@ class Quest3DataRecorderNode(Node):
                 time.sleep(sleep_for)
 
     def _reset_buffers(self) -> None:
-        for buf in (self._cmd_buf, self._current_buf, self._gripper_buf):
+        for buf in (self._cmd_buf, self._current_buf, self._wrench_buf, self._gripper_buf):
             for name in buf:
                 buf[name].clear()
         for cam in self._image_buf:
@@ -392,6 +416,7 @@ class Quest3DataRecorderNode(Node):
         with self._state_lock:
             cmds = {n: self._latest_cmd[n] for n in self.arm_names}
             currents = {n: self._latest_current[n] for n in self.arm_names}
+            wrenches = {n: self._latest_wrench[n] for n in self.arm_names}
             grippers = {n: self._latest_gripper[n] for n in self.arm_names}
 
         # Require every per-arm channel before we commit a row, so the
@@ -416,6 +441,11 @@ class Quest3DataRecorderNode(Node):
         for name in self.arm_names:
             self._cmd_buf[name].append(cmds[name])
             self._current_buf[name].append(currents[name])
+            self._wrench_buf[name].append(
+                wrenches[name]
+                if wrenches[name] is not None
+                else np.full(6, np.nan, dtype=np.float32)
+            )
             self._gripper_buf[name].append(
                 float(grippers[name]) if grippers[name] is not None else float("nan")
             )
@@ -446,7 +476,7 @@ class Quest3DataRecorderNode(Node):
         # Drop the most recent samples on any short stream so all arms agree.
         for name in self.arm_names:
             n = min(n, len(self._cmd_buf[name]), len(self._current_buf[name]),
-                    len(self._gripper_buf[name]))
+                    len(self._wrench_buf[name]), len(self._gripper_buf[name]))
         if self.camera_manager is not None:
             for cam in self.cameras_cfg:
                 n = min(n, len(self._image_buf[cam]))
@@ -468,6 +498,12 @@ class Quest3DataRecorderNode(Node):
                 for name in self.arm_names:
                     poses_grp.create_dataset(
                         name, data=np.stack(self._current_buf[name][:n], axis=0)
+                    )
+
+                wrench_grp = obs.create_group("ee_force")
+                for name in self.arm_names:
+                    wrench_grp.create_dataset(
+                        name, data=np.stack(self._wrench_buf[name][:n], axis=0)
                     )
 
                 grip_grp = obs.create_group("gripper_width")
