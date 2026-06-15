@@ -19,10 +19,13 @@ quest3_data_recorder:
     warmup_frames: 10
     # Fish-eye (V4L2/UVC) cameras matched by usb_path or serial + stream_index.
     # Find usb_path via `v4l2-ctl --list-devices` (or check /sys/class/video4linux).
-    camera_names: ["right_camera"]
-
-    right_camera:
+    camera_names: ["left_camera", "right_camera"]
+    left_camera:
       usb_path: "1-7.3"
+      serial: ""
+      stream_index: 0
+    right_camera:
+      usb_path: "1-7.2"
       serial: ""
       stream_index: 0
 
