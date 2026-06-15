@@ -9,6 +9,7 @@ quest3_data_recorder:
     stop_button_analog: B
     delete_button: X
     trigger_threshold: 0.5
+    episode_saved_topic: /quest3/data_recorder/episode_saved
 
     require_cameras: true
     image_width: 1280

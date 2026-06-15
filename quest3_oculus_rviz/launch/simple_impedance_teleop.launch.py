@@ -45,6 +45,13 @@ def generate_launch_description():
     left_wuji_serial = LaunchConfiguration("left_wuji_serial")
     right_wuji_serial = LaunchConfiguration("right_wuji_serial")
     wuji_dry_run = LaunchConfiguration("wuji_dry_run")
+    start_data_recorder = LaunchConfiguration("start_data_recorder")
+    data_recorder_config_file = LaunchConfiguration("data_recorder_config_file")
+    out_data_dir = LaunchConfiguration("out_data_dir")
+    require_cameras = LaunchConfiguration("require_cameras")
+    random_pose_after_recording = LaunchConfiguration(
+        "random_pose_after_recording"
+    )
 
     default_config = PathJoinSubstitution(
         [FindPackageShare("quest3_oculus_rviz"), "config", "simple_impedance_teleop.yaml"]
@@ -55,6 +62,9 @@ def generate_launch_description():
             "config",
             "wuji_trigger_hand.yaml",
         ]
+    )
+    default_data_recorder_config = PathJoinSubstitution(
+        [FindPackageShare("quest3_oculus_rviz"), "config", "data_recorder.yaml"]
     )
     http_control_launch = PathJoinSubstitution(
         [FindPackageShare("serl_franka_controllers_ros2"), "launch", "http_control.launch.py"]
@@ -116,6 +126,23 @@ def generate_launch_description():
             DeclareLaunchArgument("left_wuji_serial", default_value="auto"),
             DeclareLaunchArgument("right_wuji_serial", default_value="auto"),
             DeclareLaunchArgument("wuji_dry_run", default_value="false"),
+            DeclareLaunchArgument("start_data_recorder", default_value="false"),
+            DeclareLaunchArgument(
+                "data_recorder_config_file",
+                default_value=default_data_recorder_config,
+            ),
+            DeclareLaunchArgument(
+                "out_data_dir",
+                default_value="/tmp/quest3_recordings",
+            ),
+            DeclareLaunchArgument("require_cameras", default_value="true"),
+            DeclareLaunchArgument(
+                "random_pose_after_recording",
+                default_value="false",
+                description=(
+                    "Move to a sampled pose after the recorder saves an episode"
+                ),
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(http_control_launch),
                 launch_arguments={
@@ -158,6 +185,10 @@ def generate_launch_description():
                         "base_frame": base_frame,
                         "current_pose_topic": current_pose_topic,
                         "target_pose_topic": target_pose_topic,
+                        "random_pose_after_recording": ParameterValue(
+                            random_pose_after_recording,
+                            value_type=bool,
+                        ),
                     },
                 ],
             ),
@@ -192,6 +223,23 @@ def generate_launch_description():
                     },
                 ],
                 condition=IfCondition(start_wuji_trigger_hand),
+            ),
+            Node(
+                package="quest3_oculus_rviz",
+                executable="data_recorder_node",
+                name="quest3_data_recorder",
+                output="screen",
+                parameters=[
+                    data_recorder_config_file,
+                    {
+                        "out_data_dir": out_data_dir,
+                        "require_cameras": ParameterValue(
+                            require_cameras,
+                            value_type=bool,
+                        ),
+                    },
+                ],
+                condition=IfCondition(start_data_recorder),
             ),
         ]
     )

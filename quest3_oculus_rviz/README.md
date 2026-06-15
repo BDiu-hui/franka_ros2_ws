@@ -470,12 +470,53 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py
 
 # 终端 2：起记录器
 ros2 launch quest3_oculus_rviz data_recorder.launch.py \
-  out_data_dir:=/data/quest3_recordings
+  out_data_dir:=$HOME/quest3_recordings
 ```
 
 按 A 开始 → 摇操几秒 → 按 B 停止 → 在 `out_data_dir` 下生成
 `episode_0.hdf5`。如果本条数据不要，按左手柄 X 删除；否则再次按 A
 开始下一条。文件编号自动从当前目录中的最大编号继续。
+
+### 录制结束后自动移动到随机位姿
+
+单臂采集可以由同一个 launch 同时启动记录器，并在每次 HDF5 成功保存后让机械臂
+移动到下一个随机初始位姿：
+
+```bash
+source setup_env.bash
+ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
+  robot_ip:=172.16.0.3 \
+  robot_type:=fr3 \
+  load_gripper:=false \
+  start_rviz:=false \
+  start_wuji_trigger_hand:=true \
+  left_wuji_enabled:=false \
+  right_wuji_enabled:=true \
+  start_data_recorder:=true \
+  out_data_dir:=$HOME/quest3_recordings \
+  random_pose_after_recording:=true
+```
+
+行为与 `task_insertion_stage1/data_collection/collector.py` 的 long trajectory
+采样一致：
+
+- 第一次按 B 并成功保存时，当前 TCP 位姿会锁定为固定
+  `insertion_pose`；以后所有随机位姿都围绕这个目标生成，不会逐次随机游走。
+- 每次保存后，先保持末端姿态不变，沿机器人基坐标系 `+Z` 抬高 5 cm。
+- 抬升完成后，再沿 `insertion_pose` 的局部 `z` 轴退回配置的距离得到
+  `approach_pose`，并前往随机目标。
+- 位置和 ZYX 欧拉角使用有界截断高斯；插入轴使用正半高斯。
+- low/high 两组方差逐条交替，默认参数与自主采集脚本一致。
+- 抬升默认用 1.5 秒，之后随机目标用 3 秒平滑插值。任一阶段按下
+  `rightGrip` 都会立即取消自动移动并重新锚定遥操作。
+- 只有 HDF5 写入成功后才会触发移动；空 episode 或写盘失败不会触发。
+
+相关参数在 `config/simple_impedance_teleop.yaml` 的
+`random_pose_*` 区域。首次实机验证建议先把
+`random_pose_position_std_high_m` 和 `random_pose_position_bound_m`
+调小，再逐步放开。若目标位姿已知，可设置
+`random_pose_use_configured_insertion_pose: true`，并填写
+`random_pose_configured_insertion_pose: [x, y, z, rz, ry, rx]`。
 
 HDF5 结构：
 

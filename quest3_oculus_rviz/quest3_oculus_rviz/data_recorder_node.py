@@ -49,6 +49,10 @@ class Quest3DataRecorderNode(Node):
         self.declare_parameter("stop_button_analog", "B")
         self.declare_parameter("delete_button", "X")
         self.declare_parameter("trigger_threshold", 0.5)
+        self.declare_parameter(
+            "episode_saved_topic",
+            "/quest3/data_recorder/episode_saved",
+        )
 
         self.declare_parameter("require_cameras", True)
         self.declare_parameter("image_width", 1280)
@@ -87,6 +91,9 @@ class Quest3DataRecorderNode(Node):
         self.stop_button_analog = str(self.get_parameter("stop_button_analog").value)
         self.delete_button = str(self.get_parameter("delete_button").value)
         self.trigger_threshold = float(self.get_parameter("trigger_threshold").value)
+        self.episode_saved_topic = str(
+            self.get_parameter("episode_saved_topic").value
+        )
         self.require_cameras = bool(self.get_parameter("require_cameras").value)
         self.image_width = int(self.get_parameter("image_width").value)
         self.image_height = int(self.get_parameter("image_height").value)
@@ -185,6 +192,11 @@ class Quest3DataRecorderNode(Node):
             )
         self.buttons_sub = self.create_subscription(
             String, self.buttons_topic, self._buttons_callback, 10
+        )
+        self.episode_saved_pub = self.create_publisher(
+            String,
+            self.episode_saved_topic,
+            10,
         )
 
         self.camera_manager: FishEyeManager | None = None
@@ -482,6 +494,9 @@ class Quest3DataRecorderNode(Node):
 
         self._last_saved_path = target
         self.get_logger().info(f"saved {target} with {n} frames")
+        saved_msg = String()
+        saved_msg.data = str(target)
+        self.episode_saved_pub.publish(saved_msg)
 
     def _delete_last_saved_episode(self) -> None:
         target = self._last_saved_path

@@ -10,6 +10,7 @@ from geometry_msgs.msg import PoseStamped, TwistStamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from scipy.spatial.transform import Rotation
 from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
 from std_msgs.msg import Bool, String
 from tf_transformations import quaternion_from_matrix, quaternion_matrix
@@ -75,6 +76,29 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.declare_parameter("reader_restart_timeout_sec", 2.0)
         self.declare_parameter("post_recovery_hold_sec", 1.0)
         self.declare_parameter("sync_target_with_current_pose_when_idle", True)
+        self.declare_parameter("random_pose_after_recording", False)
+        self.declare_parameter(
+            "episode_saved_topic",
+            "/quest3/data_recorder/episode_saved",
+        )
+        self.declare_parameter("random_pose_insert_way", "z")
+        self.declare_parameter("random_pose_lift_height_m", 0.02)
+        self.declare_parameter("random_pose_lift_duration_sec", 1.5)
+        self.declare_parameter("random_pose_approach_offset_m", 0.05)
+        self.declare_parameter("random_pose_position_std_low_m", 0.01)
+        self.declare_parameter("random_pose_position_std_high_m", 0.10)
+        self.declare_parameter("random_pose_rotation_std_low_deg", 2.0)
+        self.declare_parameter("random_pose_rotation_std_high_deg", 10.0)
+        self.declare_parameter("random_pose_position_bound_m", 0.20)
+        self.declare_parameter("random_pose_rotation_bound_deg", 15.0)
+        self.declare_parameter("random_pose_move_duration_sec", 3.0)
+        self.declare_parameter("random_pose_seed", -1)
+        self.declare_parameter("random_pose_use_configured_insertion_pose", False)
+        self.declare_parameter(
+            "random_pose_configured_insertion_pose",
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        self.declare_parameter("random_pose_match_collector_high_orientation", True)
         self.declare_parameter("workspace_min", [0.20, -0.45, 0.08])
         self.declare_parameter("workspace_max", [0.80, 0.45, 0.75])
         self.declare_parameter("translation_sign", [1.0, 1.0, 1.0])
@@ -143,6 +167,61 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.sync_target_when_idle = bool(
             self.get_parameter("sync_target_with_current_pose_when_idle").value
         )
+        self.random_pose_after_recording = bool(
+            self.get_parameter("random_pose_after_recording").value
+        )
+        self.episode_saved_topic = str(
+            self.get_parameter("episode_saved_topic").value
+        )
+        self.random_pose_insert_way = str(
+            self.get_parameter("random_pose_insert_way").value
+        ).strip().lower()
+        self.random_pose_lift_height = float(
+            self.get_parameter("random_pose_lift_height_m").value
+        )
+        self.random_pose_lift_duration = float(
+            self.get_parameter("random_pose_lift_duration_sec").value
+        )
+        self.random_pose_approach_offset = float(
+            self.get_parameter("random_pose_approach_offset_m").value
+        )
+        self.random_pose_position_std_low = float(
+            self.get_parameter("random_pose_position_std_low_m").value
+        )
+        self.random_pose_position_std_high = float(
+            self.get_parameter("random_pose_position_std_high_m").value
+        )
+        self.random_pose_rotation_std_low = float(
+            self.get_parameter("random_pose_rotation_std_low_deg").value
+        )
+        self.random_pose_rotation_std_high = float(
+            self.get_parameter("random_pose_rotation_std_high_deg").value
+        )
+        self.random_pose_position_bound = float(
+            self.get_parameter("random_pose_position_bound_m").value
+        )
+        self.random_pose_rotation_bound = float(
+            self.get_parameter("random_pose_rotation_bound_deg").value
+        )
+        self.random_pose_move_duration = float(
+            self.get_parameter("random_pose_move_duration_sec").value
+        )
+        self.random_pose_use_configured_insertion_pose = bool(
+            self.get_parameter("random_pose_use_configured_insertion_pose").value
+        )
+        self.random_pose_configured_insertion_pose = np.asarray(
+            self.get_parameter("random_pose_configured_insertion_pose").value,
+            dtype=float,
+        )
+        self.random_pose_match_collector_high_orientation = bool(
+            self.get_parameter(
+                "random_pose_match_collector_high_orientation"
+            ).value
+        )
+        random_pose_seed = int(self.get_parameter("random_pose_seed").value)
+        self.random_pose_rng = np.random.default_rng(
+            None if random_pose_seed < 0 else random_pose_seed
+        )
         self.workspace_min = self._load_vector3_parameter("workspace_min")
         self.workspace_max = self._load_vector3_parameter("workspace_max")
         self.translation_sign = self._load_vector3_parameter("translation_sign")
@@ -173,6 +252,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             raise ValueError("input_mode must be 'reader' or 'topics'")
         if self.controller_key not in ("r", "l"):
             raise ValueError("controller_key must be 'r' or 'l'")
+        self._validate_random_pose_parameters()
 
         self.current_position = np.zeros(3, dtype=float)
         self.current_rotation = np.eye(3, dtype=float)
@@ -187,6 +267,21 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.teleop_enabled = False
         self.previous_hand_position: np.ndarray | None = None
         self.previous_hand_rotation: np.ndarray | None = None
+        self.random_pose_pending = False
+        self.random_pose_active = False
+        self.random_pose_phase = "idle"
+        self.random_pose_profile = ""
+        self.random_pose_source_episode = ""
+        self.random_pose_insertion_position: np.ndarray | None = None
+        self.random_pose_insertion_rotation: np.ndarray | None = None
+        self.random_pose_start_time = 0.0
+        self.random_pose_start_position = np.zeros(3, dtype=float)
+        self.random_pose_start_rotation = np.eye(3, dtype=float)
+        self.random_pose_lift_position = np.zeros(3, dtype=float)
+        self.random_pose_goal_position = np.zeros(3, dtype=float)
+        self.random_pose_goal_rotation = np.eye(3, dtype=float)
+        self.random_pose_goal_euler_deg = np.zeros(3, dtype=float)
+        self.random_pose_count = 0
 
         self.last_valid_transforms: dict[str, np.ndarray] = {}
         self.last_valid_buttons: dict[str, Any] = {}
@@ -244,6 +339,12 @@ class SimpleQuestImpedanceTeleopNode(Node):
         self.enabled_pub = self.create_publisher(Bool, self.enabled_topic, 10)
         self.delta_pub = self.create_publisher(TwistStamped, self.delta_topic, 10)
         self.debug_pub = self.create_publisher(String, self.debug_topic, 10)
+        self.episode_saved_sub = self.create_subscription(
+            String,
+            self.episode_saved_topic,
+            self.episode_saved_callback,
+            10,
+        )
 
         self.reader = None
         self.buttons_pub = None
@@ -279,6 +380,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             f"Quest={mode}, controller={self.controller_key}, "
             f"current_pose={self.current_pose_topic}, target={self.target_pose_topic}, "
             f"recovery_status={self.recovery_status_topic}, "
+            f"random_pose_after_recording={self.random_pose_after_recording}, "
             f"rotation_calibration_logging={self.rotation_calibration_logging}"
         )
 
@@ -327,6 +429,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
             if signature != self.last_franka_error_signature:
                 self.get_logger().warn(f"Franka is in error; pausing teleop target updates: {signature}")
                 self.last_franka_error_signature = signature
+            self._cancel_random_pose("Franka entered an error state")
             self._set_idle_target(force_sync=not self.franka_in_error)
         elif self.franka_in_error:
             self.get_logger().info("Franka error state cleared; teleop will re-anchor on next grip input.")
@@ -340,6 +443,7 @@ class SimpleQuestImpedanceTeleopNode(Node):
                 self.get_logger().warn(
                     "Franka recovery watchdog is active; pausing teleop target updates."
                 )
+                self._cancel_random_pose("Franka recovery started")
                 self._set_idle_target(force_sync=True)
             else:
                 self._set_idle_target()
@@ -381,6 +485,16 @@ class SimpleQuestImpedanceTeleopNode(Node):
         if isinstance(parsed, dict):
             self.topic_buttons = parsed
 
+    def episode_saved_callback(self, msg: String) -> None:
+        if not self.random_pose_after_recording:
+            return
+        self.random_pose_pending = True
+        self.random_pose_source_episode = msg.data
+        self.get_logger().info(
+            "Episode save completed; random pose is queued and will start "
+            "after the teleop grip is released."
+        )
+
     def timer_callback(self) -> None:
         stamp = self.get_clock().now().to_msg()
         now = time.monotonic()
@@ -416,6 +530,16 @@ class SimpleQuestImpedanceTeleopNode(Node):
             else:
                 transforms = raw_transforms
                 buttons = raw_buttons
+
+        enabled = self._is_enabled(buttons)
+        if self._handle_random_pose(
+            now,
+            stamp,
+            enabled=enabled,
+            controller_pose_available=self.controller_key in transforms,
+            buttons=buttons,
+        ):
+            return
 
         if self.controller_key not in transforms:
             self._publish_enabled(False)
@@ -453,7 +577,6 @@ class SimpleQuestImpedanceTeleopNode(Node):
         raw_rotation = self._orthonormalize(controller_transform[:3, :3])
         self._publish_raw_pose(stamp, raw_position, raw_rotation)
 
-        enabled = self._is_enabled(buttons)
         recovery_hold_active = now < self.recovery_hold_until
         if self.franka_in_error or self.recovery_active or recovery_hold_active:
             self._publish_enabled(False)
@@ -577,6 +700,269 @@ class SimpleQuestImpedanceTeleopNode(Node):
             delta_rotvec_robot=delta_rotvec_robot,
             note="running",
         )
+
+    def _handle_random_pose(
+        self,
+        now: float,
+        stamp: Any,
+        *,
+        enabled: bool,
+        controller_pose_available: bool,
+        buttons: dict[str, Any],
+    ) -> bool:
+        if not (self.random_pose_pending or self.random_pose_active):
+            return False
+
+        if enabled:
+            if self.random_pose_active:
+                self._cancel_random_pose("teleop grip pressed")
+                self._set_idle_target(force_sync=True)
+            return False
+
+        if self.franka_in_error or self.recovery_active or now < self.recovery_hold_until:
+            return False
+        if not self.have_current_pose:
+            return False
+        if self.random_pose_pending and not controller_pose_available:
+            return False
+
+        if self.random_pose_pending and not self.random_pose_active:
+            self._start_random_pose(now)
+
+        if self.random_pose_phase == "lift":
+            segment_duration = self.random_pose_lift_duration
+            segment_goal_position = self.random_pose_lift_position
+            segment_goal_rotation = self.random_pose_start_rotation
+            debug_note = "lift_before_random_pose"
+        else:
+            segment_duration = self.random_pose_move_duration
+            segment_goal_position = self.random_pose_goal_position
+            segment_goal_rotation = self.random_pose_goal_rotation
+            debug_note = "random_pose_after_recording"
+
+        elapsed = max(now - self.random_pose_start_time, 0.0)
+        progress = min(elapsed / segment_duration, 1.0)
+        smooth_progress = progress * progress * (3.0 - 2.0 * progress)
+        self.target_position = (
+            self.random_pose_start_position
+            + smooth_progress
+            * (segment_goal_position - self.random_pose_start_position)
+        )
+        relative_rotation = (
+            segment_goal_rotation @ self.random_pose_start_rotation.T
+        )
+        relative_rotvec = self._rotation_vector_from_matrix(relative_rotation)
+        self.target_rotation = self._orthonormalize(
+            self._rotation_matrix_from_rotvec(smooth_progress * relative_rotvec)
+            @ self.random_pose_start_rotation
+        )
+        self.teleop_enabled = False
+        self.previous_hand_position = None
+        self.previous_hand_rotation = None
+        self.idle_target_synced = True
+
+        self._publish_enabled(False)
+        self._publish_target_pose(stamp)
+        self._publish_zero_delta(stamp)
+        self._publish_debug(
+            enabled=False,
+            buttons=buttons,
+            delta_world=np.zeros(3, dtype=float),
+            delta_robot=np.zeros(3, dtype=float),
+            delta_rotvec_quest=np.zeros(3, dtype=float),
+            delta_rotvec_robot=np.zeros(3, dtype=float),
+            note=debug_note,
+        )
+
+        if progress >= 1.0:
+            if self.random_pose_phase == "lift":
+                self.get_logger().info(
+                    "Lift waypoint command completed: "
+                    f"position={self.random_pose_lift_position.tolist()}"
+                )
+                self.random_pose_phase = "random"
+                self.random_pose_start_position = self.current_position.copy()
+                self.random_pose_start_rotation = self.current_rotation.copy()
+                self.random_pose_start_time = now
+                self.get_logger().info(
+                    f"Starting {self.random_pose_profile}-variance random pose; "
+                    f"duration={self.random_pose_move_duration:.2f}s"
+                )
+            else:
+                self.random_pose_active = False
+                self.random_pose_phase = "idle"
+                self.get_logger().info(
+                    "Random pose command completed: "
+                    f"position={self.random_pose_goal_position.tolist()}, "
+                    f"zyx_deg={self.random_pose_goal_euler_deg.tolist()}"
+                )
+        return True
+
+    def _start_random_pose(self, now: float) -> None:
+        if self.random_pose_insertion_position is None:
+            if self.random_pose_use_configured_insertion_pose:
+                insertion_pose = self.random_pose_configured_insertion_pose
+                self.random_pose_insertion_position = insertion_pose[:3].copy()
+                self.random_pose_insertion_rotation = Rotation.from_euler(
+                    "zyx",
+                    insertion_pose[3:],
+                    degrees=True,
+                ).as_matrix()
+                center_source = "configured insertion pose"
+            else:
+                self.random_pose_insertion_position = self.current_position.copy()
+                self.random_pose_insertion_rotation = self.current_rotation.copy()
+                center_source = "first saved episode TCP pose"
+            self.get_logger().info(
+                "Random-pose insertion center captured from "
+                f"{center_source}: position="
+                f"{self.random_pose_insertion_position.tolist()}"
+            )
+
+        goal_position, goal_rotation, goal_euler = self._sample_random_pose_goal()
+        self.random_pose_start_position = self.current_position.copy()
+        self.random_pose_start_rotation = self.current_rotation.copy()
+        lift_offset = np.array(
+            [0.0, 0.0, self.random_pose_lift_height],
+            dtype=float,
+        )
+        self.random_pose_lift_position = self._clamp_position(
+            self.current_position + lift_offset
+        )
+        self.random_pose_goal_position = goal_position
+        self.random_pose_goal_rotation = goal_rotation
+        self.random_pose_goal_euler_deg = goal_euler
+        self.random_pose_start_time = now
+        self.random_pose_pending = False
+        self.random_pose_active = True
+        self.random_pose_phase = "lift"
+        self.random_pose_count += 1
+        self.random_pose_profile = (
+            "low" if self.random_pose_count % 2 == 1 else "high"
+        )
+        self.get_logger().info(
+            "Starting lift before random pose after "
+            f"{self.random_pose_source_episode or 'saved episode'}: "
+            f"world_z_lift={self.random_pose_lift_height:.3f}m, "
+            f"duration={self.random_pose_lift_duration:.2f}s, "
+            f"then_profile={self.random_pose_profile}"
+        )
+
+    def _sample_random_pose_goal(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        assert self.random_pose_insertion_position is not None
+        assert self.random_pose_insertion_rotation is not None
+
+        insert_axis = {"x": 0, "y": 1, "z": 2}[self.random_pose_insert_way]
+        local_offset = np.zeros(3, dtype=float)
+        local_offset[insert_axis] = self.random_pose_approach_offset
+        approach_position = (
+            self.random_pose_insertion_position
+            - self.random_pose_insertion_rotation @ local_offset
+        )
+        approach_euler = Rotation.from_matrix(
+            self.random_pose_insertion_rotation
+        ).as_euler("zyx", degrees=True)
+
+        high_variance = self.random_pose_count % 2 == 1
+        position_std = (
+            self.random_pose_position_std_high
+            if high_variance
+            else self.random_pose_position_std_low
+        )
+        rotation_std = (
+            self.random_pose_rotation_std_high
+            if high_variance
+            else self.random_pose_rotation_std_low
+        )
+
+        sampled_position = np.empty(3, dtype=float)
+        for axis in range(3):
+            half = axis == insert_axis
+            delta = self._sample_truncated_normal(
+                position_std,
+                self.random_pose_position_bound,
+                half=half,
+            )
+            sampled_position[axis] = approach_position[axis] + delta
+        sampled_position = self._clamp_position(sampled_position)
+
+        rotation_center = approach_euler.copy()
+        if high_variance and self.random_pose_match_collector_high_orientation:
+            rotation_center[1] = 0.0
+            rotation_center[2] = 180.0
+        sampled_euler = np.array(
+            [
+                center
+                + self._sample_truncated_normal(
+                    rotation_std,
+                    self.random_pose_rotation_bound,
+                    half=False,
+                )
+                for center in rotation_center
+            ],
+            dtype=float,
+        )
+        sampled_rotation = Rotation.from_euler(
+            "zyx",
+            sampled_euler,
+            degrees=True,
+        ).as_matrix()
+        return sampled_position, sampled_rotation, sampled_euler
+
+    def _sample_truncated_normal(
+        self,
+        std: float,
+        bound: float,
+        *,
+        half: bool,
+        max_tries: int = 200,
+    ) -> float:
+        for _ in range(max_tries):
+            delta = float(self.random_pose_rng.normal(0.0, std))
+            if half:
+                delta = abs(delta)
+            if -bound <= delta <= bound:
+                return delta
+        raise RuntimeError(
+            "random-pose truncated-normal sampling failed after "
+            f"{max_tries} attempts"
+        )
+
+    def _cancel_random_pose(self, reason: str) -> None:
+        if not (self.random_pose_pending or self.random_pose_active):
+            return
+        self.random_pose_pending = False
+        self.random_pose_active = False
+        self.random_pose_phase = "idle"
+        self.get_logger().warn(f"Random pose cancelled: {reason}")
+
+    def _validate_random_pose_parameters(self) -> None:
+        if self.random_pose_insert_way not in {"x", "y", "z"}:
+            raise ValueError("random_pose_insert_way must be 'x', 'y', or 'z'")
+        if self.random_pose_approach_offset < 0.0:
+            raise ValueError("random_pose_approach_offset_m must be non-negative")
+        if self.random_pose_lift_height <= 0.0:
+            raise ValueError("random_pose_lift_height_m must be positive")
+        positive_values = {
+            "random_pose_lift_duration_sec": self.random_pose_lift_duration,
+            "random_pose_position_std_low_m": self.random_pose_position_std_low,
+            "random_pose_position_std_high_m": self.random_pose_position_std_high,
+            "random_pose_rotation_std_low_deg": self.random_pose_rotation_std_low,
+            "random_pose_rotation_std_high_deg": self.random_pose_rotation_std_high,
+            "random_pose_position_bound_m": self.random_pose_position_bound,
+            "random_pose_rotation_bound_deg": self.random_pose_rotation_bound,
+            "random_pose_move_duration_sec": self.random_pose_move_duration,
+        }
+        for name, value in positive_values.items():
+            if value <= 0.0:
+                raise ValueError(f"{name} must be positive")
+        if self.random_pose_configured_insertion_pose.shape != (6,):
+            raise ValueError(
+                "random_pose_configured_insertion_pose must contain 6 values "
+                "[x, y, z, rz, ry, rx]"
+            )
 
     def _set_idle_target(self, *, force_sync: bool = False) -> bool:
         was_teleop_enabled = self.teleop_enabled
