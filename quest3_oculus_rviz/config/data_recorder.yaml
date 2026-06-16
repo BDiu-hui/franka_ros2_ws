@@ -41,3 +41,4 @@ quest3_data_recorder:
       cmd_topic: /cartesian_impedance_controller/equilibrium_pose
       current_pose_topic: /franka_robot_state_broadcaster/current_pose
       gripper_joint_states_topic: /franka_gripper/joint_states
+      wrench_topic: /franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
