@@ -13,6 +13,8 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
 
 from controller_manager_msgs.srv import ConfigureController
 from controller_manager_msgs.srv import ListControllers
@@ -198,23 +200,25 @@ class FrankaHTTPBridge(Node):
             self.get_parameter("cartesian_pose_command_topic").get_parameter_value().string_value,
             10,
         )
+        convenience_qos = QoSProfile(depth=10)
+        convenience_qos.reliability = ReliabilityPolicy.BEST_EFFORT
         self.create_subscription(
             PoseStamped,
             self.get_parameter("current_pose_topic").get_parameter_value().string_value,
             self._pose_callback,
-            10,
+            convenience_qos,
         )
         self.create_subscription(
             WrenchStamped,
             self.get_parameter("stiffness_wrench_topic").get_parameter_value().string_value,
             self._wrench_callback,
-            10,
+            convenience_qos,
         )
         self.create_subscription(
             JointState,
             self.get_parameter("measured_joint_states_topic").get_parameter_value().string_value,
             self._joint_state_callback,
-            10,
+            convenience_qos,
         )
         self.create_subscription(
             FrankaRobotState,
@@ -328,20 +332,20 @@ class FrankaHTTPBridge(Node):
                 self.vel = self._matrix_vector_multiply(self.jacobian, self.dq)
 
     def _franka_state_callback(self, msg: FrankaRobotState) -> None:
-        if not self.have_pose:
-            pose = [
-                float(msg.o_t_ee.pose.position.x),
-                float(msg.o_t_ee.pose.position.y),
-                float(msg.o_t_ee.pose.position.z),
-                float(msg.o_t_ee.pose.orientation.x),
-                float(msg.o_t_ee.pose.orientation.y),
-                float(msg.o_t_ee.pose.orientation.z),
-                float(msg.o_t_ee.pose.orientation.w),
-            ]
-            with self._state_lock:
-                self.pose = pose
-                self.have_pose = True
+        pose = [
+            float(msg.o_t_ee.pose.position.x),
+            float(msg.o_t_ee.pose.position.y),
+            float(msg.o_t_ee.pose.position.z),
+            float(msg.o_t_ee.pose.orientation.x),
+            float(msg.o_t_ee.pose.orientation.y),
+            float(msg.o_t_ee.pose.orientation.z),
+            float(msg.o_t_ee.pose.orientation.w),
+        ]
+        joint_state = msg.measured_joint_state
+        has_joint_state = len(joint_state.position) >= 7 and len(joint_state.velocity) >= 7
         with self._state_lock:
+            self.pose = pose
+            self.have_pose = True
             self.force = [
                 float(msg.k_f_ext_hat_k.wrench.force.x),
                 float(msg.k_f_ext_hat_k.wrench.force.y),
@@ -352,6 +356,12 @@ class FrankaHTTPBridge(Node):
                 float(msg.k_f_ext_hat_k.wrench.torque.y),
                 float(msg.k_f_ext_hat_k.wrench.torque.z),
             ]
+            if has_joint_state:
+                self.q = [float(value) for value in joint_state.position[:7]]
+                self.dq = [float(value) for value in joint_state.velocity[:7]]
+                self.have_joint_state = True
+                if self.have_jacobian:
+                    self.vel = self._matrix_vector_multiply(self.jacobian, self.dq)
 
     def _jacobian_callback(self, msg: ZeroJacobian) -> None:
         with self._state_lock:

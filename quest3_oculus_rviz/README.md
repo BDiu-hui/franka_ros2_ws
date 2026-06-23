@@ -489,7 +489,7 @@ ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
   robot_type:=fr3 \
   load_gripper:=false \
   start_rviz:=false \
-  start_wuji_trigger_hand:=true \
+  start_wuji_trigger_hand:=false \
   left_wuji_enabled:=false \
   right_wuji_enabled:=true \
   start_data_recorder:=true \
