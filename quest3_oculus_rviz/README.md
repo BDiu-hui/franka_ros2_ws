@@ -651,3 +651,41 @@ ros2 launch quest3_oculus_rviz data_recorder.launch.py require_cameras:=false
 - 同一台机械臂同一时间只能有一个 FCI 控制进程。
 - 启动、恢复或松开 grip 进入 idle 时，teleop 只会把目标同步到当前 TCP pose 一次，之后保持该目标，避免负载下坠时连续跟随。
 - 如果出现方向不对，优先改 sign；如果整体坐标系不对，再改 `quest_to_robot_rotation`。
+
+## 分进程绑核启动
+
+终端 1：启动 Franka + impedance hold，并把实时控制与辅助节点放到不同 CPU：
+
+```bash
+source setup_env.bash
+ros2 launch serl_franka_controllers_ros2 http_control.launch.py \
+  robot_ip:=172.16.0.3 \
+  robot_type:=fr3 \
+  start_rviz:=false \
+  load_gripper:=false \
+  auto_start_impedance:=true \
+  auto_recover_after_reflex:=false \
+  ros2_control_cpu:=2 \
+  franka_aux_cpu:=4 \
+  http_server_cpu:=6
+```
+
+终端 2：只启动 Quest teleop + recorder，不重复启动 Franka stack：
+
+```bash
+source setup_env.bash
+ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
+  start_impedance_stack:=false \
+  robot_ip:=172.16.0.3 \
+  robot_type:=fr3 \
+  load_gripper:=false \
+  start_rviz:=false \
+  start_wuji_trigger_hand:=false \
+  left_wuji_enabled:=false \
+  right_wuji_enabled:=true \
+  start_data_recorder:=true \
+  out_data_dir:=$HOME/quest3_recordings \
+  random_pose_after_recording:=true \
+  quest_teleop_cpu:=8 \
+  data_recorder_cpu:=10-11
+```

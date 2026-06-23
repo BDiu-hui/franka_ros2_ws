@@ -17,6 +17,8 @@ def generate_launch_description():
     fake_sensor_commands = LaunchConfiguration("fake_sensor_commands")
     joint_state_rate = LaunchConfiguration("joint_state_rate")
     start_franka_robot_state_broadcaster = LaunchConfiguration("start_franka_robot_state_broadcaster")
+    ros2_control_cpu = LaunchConfiguration("ros2_control_cpu")
+    franka_aux_cpu = LaunchConfiguration("franka_aux_cpu")
     start_rviz = LaunchConfiguration("start_rviz")
     start_impedance_controller = LaunchConfiguration("start_impedance_controller")
     controllers_yaml = PathJoinSubstitution(
@@ -58,6 +60,16 @@ def generate_launch_description():
                 description="Whether to spawn franka_robot_state_broadcaster",
             ),
             DeclareLaunchArgument(
+                "ros2_control_cpu",
+                default_value="",
+                description="Optional CPU list for ros2_control_node, e.g. '2' or '2-3'",
+            ),
+            DeclareLaunchArgument(
+                "franka_aux_cpu",
+                default_value="",
+                description="Optional CPU list for non-control Franka helper processes",
+            ),
+            DeclareLaunchArgument(
                 "start_rviz",
                 default_value="true",
                 description="Whether to launch RViz with the impedance tuning panel",
@@ -83,6 +95,8 @@ def generate_launch_description():
                     "fake_sensor_commands": fake_sensor_commands,
                     "joint_state_rate": joint_state_rate,
                     "start_franka_robot_state_broadcaster": start_franka_robot_state_broadcaster,
+                    "ros2_control_cpu": ros2_control_cpu,
+                    "franka_aux_cpu": franka_aux_cpu,
                     "controllers_yaml": controllers_yaml,
                 }.items(),
             ),

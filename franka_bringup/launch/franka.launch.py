@@ -78,6 +78,11 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
+
+def _taskset_prefix(cpu):
+    return {'prefix': f'taskset -c {cpu}'} if cpu else {}
+
+
 # Generates the "default" nodes (controller_manager, robot_state_publisher, etc.)
 # for the Franka robot. This function is called by the main launch file.
 # It uses the xacro library to process the URDF file and generate the robot description.
@@ -127,6 +132,10 @@ def generate_robot_nodes(context):
     namespace = LaunchConfiguration('namespace').perform(context)
 
     controllers_yaml = LaunchConfiguration('controllers_yaml').perform(context)
+    ros2_control_cpu = LaunchConfiguration('ros2_control_cpu').perform(context).strip()
+    franka_aux_cpu = LaunchConfiguration('franka_aux_cpu').perform(context).strip()
+    ros2_control_prefix = _taskset_prefix(ros2_control_cpu)
+    franka_aux_prefix = _taskset_prefix(franka_aux_cpu)
 
     joint_state_publisher_sources = [
         'franka/joint_states',
@@ -141,6 +150,7 @@ def generate_robot_nodes(context):
             namespace=namespace,
             parameters=[{'robot_description': robot_description}],
             output='screen',
+            **franka_aux_prefix,
         ),
         Node(
             package='controller_manager',
@@ -156,6 +166,7 @@ def generate_robot_nodes(context):
             remappings=[('joint_states', joint_state_publisher_sources[0])],
             output='screen',
             on_exit=Shutdown(),
+            **ros2_control_prefix,
         ),
         Node(
             package='joint_state_publisher',
@@ -170,6 +181,7 @@ def generate_robot_nodes(context):
                 }
             ],
             output='screen',
+            **franka_aux_prefix,
         ),
         Node(
             package='controller_manager',
@@ -177,6 +189,7 @@ def generate_robot_nodes(context):
             namespace=namespace,
             arguments=['joint_state_broadcaster'],
             output='screen',
+            **franka_aux_prefix,
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -210,6 +223,7 @@ def generate_robot_nodes(context):
                 namespace=namespace,
                 arguments=['franka_robot_state_broadcaster'],
                 output='screen',
+                **franka_aux_prefix,
             ),
         )
 
@@ -265,6 +279,16 @@ def generate_launch_description():
             'start_franka_robot_state_broadcaster',
             default_value='true',
             description='Whether to spawn franka_robot_state_broadcaster.',
+        ),
+        DeclareLaunchArgument(
+            'ros2_control_cpu',
+            default_value='',
+            description='Optional CPU list for ros2_control_node, e.g. "2" or "2-3".',
+        ),
+        DeclareLaunchArgument(
+            'franka_aux_cpu',
+            default_value='',
+            description='Optional CPU list for non-control Franka helper processes.',
         ),
     ]
 

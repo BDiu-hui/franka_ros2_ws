@@ -2,10 +2,14 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+
+def _taskset_prefix(cpu):
+    return PythonExpression(["'taskset -c ", cpu, "' if '", cpu, "' else ''"])
 
 
 def generate_launch_description():
@@ -17,6 +21,10 @@ def generate_launch_description():
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
     fake_sensor_commands = LaunchConfiguration("fake_sensor_commands")
     joint_state_rate = LaunchConfiguration("joint_state_rate")
+    ros2_control_cpu = LaunchConfiguration("ros2_control_cpu")
+    franka_aux_cpu = LaunchConfiguration("franka_aux_cpu")
+    http_server_cpu = LaunchConfiguration("http_server_cpu")
+    watchdog_cpu = LaunchConfiguration("watchdog_cpu")
     start_rviz = LaunchConfiguration("start_rviz")
     start_impedance_controller = LaunchConfiguration("start_impedance_controller")
     server_host = LaunchConfiguration("server_host")
@@ -61,6 +69,26 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "joint_state_rate", default_value="30", description="Joint state publisher rate in Hz"
+            ),
+            DeclareLaunchArgument(
+                "ros2_control_cpu",
+                default_value="",
+                description="Optional CPU list for ros2_control_node, e.g. '2' or '2-3'",
+            ),
+            DeclareLaunchArgument(
+                "franka_aux_cpu",
+                default_value="",
+                description="Optional CPU list for non-control Franka helper processes",
+            ),
+            DeclareLaunchArgument(
+                "http_server_cpu",
+                default_value="",
+                description="Optional CPU list for serl_franka_http_server.py",
+            ),
+            DeclareLaunchArgument(
+                "watchdog_cpu",
+                default_value="",
+                description="Optional CPU list for franka_error_recovery_watchdog.py",
             ),
             DeclareLaunchArgument(
                 "start_rviz",
@@ -152,6 +180,8 @@ def generate_launch_description():
                     "use_fake_hardware": use_fake_hardware,
                     "fake_sensor_commands": fake_sensor_commands,
                     "joint_state_rate": joint_state_rate,
+                    "ros2_control_cpu": ros2_control_cpu,
+                    "franka_aux_cpu": franka_aux_cpu,
                     "start_rviz": start_rviz,
                     "start_impedance_controller": start_impedance_controller,
                 }.items(),
@@ -199,6 +229,7 @@ def generate_launch_description():
                 executable="serl_franka_http_server.py",
                 namespace=namespace,
                 output="screen",
+                prefix=_taskset_prefix(http_server_cpu),
                 parameters=[
                     controllers_yaml,
                     {
@@ -235,6 +266,7 @@ def generate_launch_description():
                 executable="franka_error_recovery_watchdog.py",
                 namespace=namespace,
                 output="screen",
+                prefix=_taskset_prefix(watchdog_cpu),
                 parameters=[
                     {
                         "enabled": ParameterValue(auto_recover_after_reflex, value_type=bool),
