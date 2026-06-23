@@ -167,16 +167,35 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_configure(
 
   convenience_publish_rate_ =
       std::min(static_cast<int>(params.convenience_publish_rate), kUpdateRate);
-  int skip = std::max(1, kUpdateRate / convenience_publish_rate_);
-  int effective_rate = kUpdateRate / skip;
-  if (effective_rate != convenience_publish_rate_) {
+  robot_state_publish_rate_ =
+      std::clamp(static_cast<int>(params.robot_state_publish_rate), 0, kUpdateRate);
+  const int requested_sample_rate = std::max(convenience_publish_rate_, robot_state_publish_rate_);
+  state_sample_decimation_ = std::max(1, kUpdateRate / requested_sample_rate);
+  state_sample_rate_ = kUpdateRate / state_sample_decimation_;
+  state_sample_counter_ = state_sample_decimation_ - 1;
+
+  const int convenience_skip = std::max(1, state_sample_rate_ / convenience_publish_rate_);
+  const int effective_convenience_rate = state_sample_rate_ / convenience_skip;
+  int effective_robot_state_rate = 0;
+  if (robot_state_publish_rate_ > 0) {
+    const int robot_state_skip = std::max(1, state_sample_rate_ / robot_state_publish_rate_);
+    effective_robot_state_rate = state_sample_rate_ / robot_state_skip;
+  }
+  if (effective_convenience_rate != convenience_publish_rate_) {
     RCLCPP_WARN(get_node()->get_logger(),
                 "convenience_publish_rate %d Hz does not evenly divide update rate %d Hz. "
                 "Effective rate: %d Hz.",
-                convenience_publish_rate_, kUpdateRate, effective_rate);
+                convenience_publish_rate_, kUpdateRate, effective_convenience_rate);
   }
-  RCLCPP_INFO(get_node()->get_logger(), "Convenience topics at %d Hz, full state at %d Hz",
-              effective_rate, kUpdateRate);
+  if (robot_state_publish_rate_ > 0 && effective_robot_state_rate != robot_state_publish_rate_) {
+    RCLCPP_WARN(get_node()->get_logger(),
+                "robot_state_publish_rate %d Hz does not evenly divide update rate %d Hz. "
+                "Effective rate: %d Hz.",
+                robot_state_publish_rate_, kUpdateRate, effective_robot_state_rate);
+  }
+  RCLCPP_INFO(get_node()->get_logger(),
+              "State sampled at %d Hz. Convenience topics at %d Hz, full state at %d Hz",
+              state_sample_rate_, effective_convenience_rate, effective_robot_state_rate);
 
   RCLCPP_DEBUG(get_node()->get_logger(), "configure successful");
   return CallbackReturn::SUCCESS;
@@ -199,6 +218,12 @@ controller_interface::CallbackReturn FrankaRobotStateBroadcaster::on_deactivate(
 controller_interface::return_type FrankaRobotStateBroadcaster::update(
     const rclcpp::Time& time,
     const rclcpp::Duration& /*period*/) {
+  state_sample_counter_++;
+  if (state_sample_counter_ < state_sample_decimation_) {
+    return controller_interface::return_type::OK;
+  }
+  state_sample_counter_ = 0;
+
   auto& free_state = state_buffer_.get_free_buffer();
   free_state.header.stamp = time;
 
@@ -216,9 +241,11 @@ controller_interface::return_type FrankaRobotStateBroadcaster::update(
 }
 
 void FrankaRobotStateBroadcaster::publishRunner() {
-  // Publish convenience topics every N-th cycle where N = kUpdateRate / convenience_publish_rate_.
-  const int skip = std::max(1, kUpdateRate / convenience_publish_rate_);
+  const int convenience_skip = std::max(1, state_sample_rate_ / convenience_publish_rate_);
+  const int robot_state_skip =
+      robot_state_publish_rate_ > 0 ? std::max(1, state_sample_rate_ / robot_state_publish_rate_) : 0;
   int convenience_counter = 0;
+  int robot_state_counter = 0;
 
   while (is_publish_thread_running_) {
     if (!data_ready_.load(std::memory_order_acquire)) {
@@ -233,11 +260,13 @@ void FrankaRobotStateBroadcaster::publishRunner() {
     // Publishers are guaranteed to be valid here: the thread only runs between
     // on_activate (after on_configure creates publishers) and on_deactivate.
     if (has_new_data) {
-      // Full state always publishes at the update rate (1kHz).
-      franka_state_publisher->publish(state);
+      if (robot_state_skip > 0 && ++robot_state_counter >= robot_state_skip) {
+        robot_state_counter = 0;
+        franka_state_publisher->publish(state);
+      }
 
       // Convenience topics publish at convenience_publish_rate_ Hz.
-      if (++convenience_counter >= skip) {
+      if (++convenience_counter >= convenience_skip) {
         convenience_counter = 0;
         current_pose_stamped_publisher_->publish(state.o_t_ee);
         last_desired_pose_stamped_publisher_->publish(state.o_t_ee_d);

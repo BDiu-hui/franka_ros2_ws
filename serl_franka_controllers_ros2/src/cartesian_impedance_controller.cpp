@@ -16,8 +16,6 @@ Reference:
 
 #include <pluginlib/class_list_macros.hpp>
 
-#include <serl_franka_controllers_ros2/pseudo_inversion.h>
-
 namespace {
 
 template <class To, class From>
@@ -94,6 +92,7 @@ CallbackReturn CartesianImpedanceController::on_init() {
     auto_declare<double>("filter_params", compliance_params_.filter_params);
     auto_declare<double>("elbow_stiffness", compliance_params_.elbow_stiffness);
     auto_declare<double>("elbow_damping", compliance_params_.elbow_damping);
+    auto_declare<double>("jacobian_publish_rate", 100.0);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Init failed: %s", e.what());
     return CallbackReturn::ERROR;
@@ -164,6 +163,7 @@ bool CartesianImpedanceController::read_parameters() {
   compliance_params_.filter_params = get_node()->get_parameter("filter_params").as_double();
   compliance_params_.elbow_stiffness = get_node()->get_parameter("elbow_stiffness").as_double();
   compliance_params_.elbow_damping = get_node()->get_parameter("elbow_damping").as_double();
+  set_jacobian_publish_rate(get_node()->get_parameter("jacobian_publish_rate").as_double());
 
   return true;
 }
@@ -255,7 +255,11 @@ controller_interface::return_type CartesianImpedanceController::update(
   const auto& robot_state = *robot_state_ptr_;
   const auto coriolis_array = franka_robot_model_->getCoriolisForceVector();
   jacobian_array_ = franka_robot_model_->getZeroJacobian(franka::Frame::kEndEffector);
-  publish_zero_jacobian();
+  if (jacobian_publish_decimation_ > 0 &&
+      ++jacobian_publish_counter_ >= jacobian_publish_decimation_) {
+    jacobian_publish_counter_ = 0;
+    publish_zero_jacobian();
+  }
 
   const Eigen::Map<const Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
   const Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array_.data());
@@ -297,9 +301,18 @@ controller_interface::return_type CartesianImpedanceController::update(
   error_i_.head(3) = (error_i_.head(3) + error_.head(3)).cwiseMax(-0.1).cwiseMin(0.1);
   error_i_.tail(3) = (error_i_.tail(3) + error_.tail(3)).cwiseMax(-0.3).cwiseMin(0.3);
 
-  Eigen::VectorXd tau_task(kNumJoints), tau_nullspace(kNumJoints), tau_d(kNumJoints);
-  Eigen::MatrixXd jacobian_transpose_pinv;
-  pseudoInverse(jacobian.transpose(), jacobian_transpose_pinv);
+  Eigen::Matrix<double, 7, 1> tau_task;
+  Eigen::Matrix<double, 7, 1> tau_nullspace;
+  Eigen::Matrix<double, 7, 1> tau_d;
+  const Eigen::Matrix<double, 6, 6> jj_t_damped =
+      jacobian * jacobian.transpose() +
+      (kDampedPseudoInverseLambda * kDampedPseudoInverseLambda) *
+          Eigen::Matrix<double, 6, 6>::Identity();
+  const Eigen::Matrix<double, 6, 7> jacobian_transpose_pinv =
+      jj_t_damped.ldlt().solve(jacobian);
+  const Eigen::Matrix<double, 7, 7> nullspace_projector =
+      Eigen::Matrix<double, 7, 7>::Identity() -
+      jacobian.transpose() * jacobian_transpose_pinv;
 
   tau_task = jacobian.transpose() *
              (-cartesian_stiffness_ * error_ - cartesian_damping_ * (jacobian * dq) -
@@ -311,7 +324,7 @@ controller_interface::return_type CartesianImpedanceController::update(
   dqe.head(1) *= 2.0 * std::sqrt(joint1_nullspace_stiffness_);
 
   tau_nullspace =
-      (Eigen::MatrixXd::Identity(kNumJoints, kNumJoints) - jacobian.transpose() * jacobian_transpose_pinv) *
+      nullspace_projector *
       (nullspace_stiffness_ * qe - (2.0 * std::sqrt(nullspace_stiffness_)) * dqe);
 
   Eigen::Matrix<double, 7, 1> tau_elbow_null = Eigen::Matrix<double, 7, 1>::Zero();
@@ -328,9 +341,7 @@ controller_interface::return_type CartesianImpedanceController::update(
     const Eigen::Matrix<double, 7, 1> tau_elbow_task =
         J_e.transpose() * (elbow_stiffness_ * e_pos - elbow_damping_ * (J_e * dq));
 
-    tau_elbow_null =
-        (Eigen::MatrixXd::Identity(kNumJoints, kNumJoints) -
-         jacobian.transpose() * jacobian_transpose_pinv) * tau_elbow_task;
+    tau_elbow_null = nullspace_projector * tau_elbow_task;
   }
 
   tau_d = tau_task + tau_nullspace + tau_elbow_null + coriolis;
@@ -372,6 +383,19 @@ void CartesianImpedanceController::publish_zero_jacobian() {
     realtime_jacobian_publisher_->msg_.zero_jacobian[i] = jacobian_array_[i];
   }
   realtime_jacobian_publisher_->unlockAndPublish();
+}
+
+void CartesianImpedanceController::set_jacobian_publish_rate(double publish_rate_hz) {
+  if (publish_rate_hz <= 0.0) {
+    jacobian_publish_decimation_ = 0;
+    jacobian_publish_counter_ = 0;
+    return;
+  }
+
+  constexpr double kControllerUpdateRateHz = 1000.0;
+  jacobian_publish_decimation_ =
+      std::max(1, static_cast<int>(std::lround(kControllerUpdateRateHz / publish_rate_hz)));
+  jacobian_publish_counter_ = 0;
 }
 
 Eigen::Matrix<double, 7, 1> CartesianImpedanceController::saturate_torque_rate(
@@ -524,6 +548,8 @@ rcl_interfaces::msg::SetParametersResult CartesianImpedanceController::on_parame
       updated.elbow_stiffness = parameter.as_double();
     } else if (name == "elbow_damping") {
       updated.elbow_damping = parameter.as_double();
+    } else if (name == "jacobian_publish_rate") {
+      set_jacobian_publish_rate(parameter.as_double());
     }
   }
 

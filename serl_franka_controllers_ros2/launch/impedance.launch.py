@@ -16,6 +16,7 @@ def generate_launch_description():
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
     fake_sensor_commands = LaunchConfiguration("fake_sensor_commands")
     joint_state_rate = LaunchConfiguration("joint_state_rate")
+    start_franka_robot_state_broadcaster = LaunchConfiguration("start_franka_robot_state_broadcaster")
     start_rviz = LaunchConfiguration("start_rviz")
     start_impedance_controller = LaunchConfiguration("start_impedance_controller")
     controllers_yaml = PathJoinSubstitution(
@@ -52,6 +53,11 @@ def generate_launch_description():
                 "joint_state_rate", default_value="30", description="Joint state publisher rate in Hz"
             ),
             DeclareLaunchArgument(
+                "start_franka_robot_state_broadcaster",
+                default_value="true",
+                description="Whether to spawn franka_robot_state_broadcaster",
+            ),
+            DeclareLaunchArgument(
                 "start_rviz",
                 default_value="true",
                 description="Whether to launch RViz with the impedance tuning panel",
@@ -76,6 +82,7 @@ def generate_launch_description():
                     "use_fake_hardware": use_fake_hardware,
                     "fake_sensor_commands": fake_sensor_commands,
                     "joint_state_rate": joint_state_rate,
+                    "start_franka_robot_state_broadcaster": start_franka_robot_state_broadcaster,
                     "controllers_yaml": controllers_yaml,
                 }.items(),
             ),

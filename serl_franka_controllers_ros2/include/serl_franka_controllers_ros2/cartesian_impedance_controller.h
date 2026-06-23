@@ -78,6 +78,7 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Eigen::Vector3d compute_elbow_position(const Eigen::Matrix<double, 7, 1>& q) const;
   void apply_compliance_params(const ComplianceParams& params);
   bool read_parameters();
+  void set_jacobian_publish_rate(double publish_rate_hz);
   rcl_interfaces::msg::SetParametersResult on_parameters_set(
       const std::vector<rclcpp::Parameter>& parameters);
   franka::RobotState* get_robot_state_ptr();
@@ -91,6 +92,7 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
 
   static constexpr size_t kNumJoints = 7;
   static constexpr double kDeltaTauMax = 1.0;
+  static constexpr double kDampedPseudoInverseLambda = 0.2;
 
   std::array<double, 42> jacobian_array_{};
   franka::RobotState* robot_state_ptr_{nullptr};
@@ -104,6 +106,8 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   rclcpp::Subscription<serl_franka_controllers_ros2::msg::CartesianImpedanceCommand>::SharedPtr
       equilibrium_pose_subscriber_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
+  int jacobian_publish_decimation_{10};
+  int jacobian_publish_counter_{0};
 
   ComplianceParams compliance_params_;
   std::mutex target_mutex_;

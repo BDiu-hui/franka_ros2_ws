@@ -111,6 +111,10 @@ class FrankaRobotStateBroadcaster : public controller_interface::ControllerInter
   // Publish rate in Hz for convenience topics, loaded from the convenience_publish_rate parameter.
   // Written in on_configure() before the publish thread starts; read in publishRunner().
   int convenience_publish_rate_{1000};
+  int robot_state_publish_rate_{1000};
+  int state_sample_rate_{1000};
+  int state_sample_decimation_{1};
+  int state_sample_counter_{0};
 
   void startPublishThread();
   void stopPublishThread();

@@ -88,6 +88,15 @@ def generate_robot_nodes(context):
         context
     )
     load_gripper = load_gripper_launch_configuration.lower() == 'true'
+    use_fake_hardware = (
+        LaunchConfiguration('use_fake_hardware').perform(context).lower() == 'true'
+    )
+    start_franka_robot_state_broadcaster = (
+        LaunchConfiguration('start_franka_robot_state_broadcaster')
+        .perform(context)
+        .lower()
+        == 'true'
+    )
     robot_type = LaunchConfiguration('robot_type').perform(context)
     arm_prefix = LaunchConfiguration('arm_prefix').perform(context)
     urdf_path = PathJoinSubstitution(
@@ -169,14 +178,6 @@ def generate_robot_nodes(context):
             arguments=['joint_state_broadcaster'],
             output='screen',
         ),
-        Node(
-            package='controller_manager',
-            executable='spawner',
-            namespace=namespace,
-            arguments=['franka_robot_state_broadcaster'],
-            condition=UnlessCondition(LaunchConfiguration('use_fake_hardware')),
-            output='screen',
-        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 [
@@ -199,6 +200,18 @@ def generate_robot_nodes(context):
             condition=IfCondition(LaunchConfiguration('load_gripper')),
         ),
     ]
+
+    if not use_fake_hardware and start_franka_robot_state_broadcaster:
+        nodes.insert(
+            4,
+            Node(
+                package='controller_manager',
+                executable='spawner',
+                namespace=namespace,
+                arguments=['franka_robot_state_broadcaster'],
+                output='screen',
+            ),
+        )
 
     return nodes
 
@@ -247,6 +260,11 @@ def generate_launch_description():
                 [FindPackageShare('franka_bringup'), 'config', 'controllers.yaml']
             ),
             description='Override the default controllers.yaml file.',
+        ),
+        DeclareLaunchArgument(
+            'start_franka_robot_state_broadcaster',
+            default_value='true',
+            description='Whether to spawn franka_robot_state_broadcaster.',
         ),
     ]
 

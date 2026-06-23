@@ -10,8 +10,16 @@ franka_robot_state_broadcaster:
   convenience_publish_rate: {
     type: int,
     default_value: 1000,
-    description: "Publish rate in Hz for convenience topics (current_pose, joint_states, etc.). Full robot state always publishes at the controller update rate (1000 Hz).",
+    description: "Publish rate in Hz for convenience topics (current_pose, joint_states, etc.).",
     validation: {
       gt_eq<>: [1],
+    }
+  }
+  robot_state_publish_rate: {
+    type: int,
+    default_value: 1000,
+    description: "Publish rate in Hz for the full robot_state topic. Set to 0 to disable full-state publishing.",
+    validation: {
+      gt_eq<>: [0],
     }
   }
