@@ -9,6 +9,8 @@ serial. ``FishEyeManager`` mirrors the old ``RealSenseManager`` interface
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,6 +165,10 @@ class OpenCVCamera:
         self.fourcc = fourcc
         self.capture: cv2.VideoCapture | None = None
         self.connected = False
+        self._lock = threading.Lock()
+        self._frame_ready = threading.Event()
+        self._stop_event = threading.Event()
+        self._grab_thread: threading.Thread | None = None
 
     def initialize(self) -> None:
         capture = cv2.VideoCapture(str(self.device.device_path), cv2.CAP_V4L2)
@@ -198,17 +204,53 @@ class OpenCVCamera:
             f"fourcc={actual_fourcc}"
         )
 
+        self._stop_event.clear()
+        self._frame_ready.clear()
+        self._grab_thread = threading.Thread(
+            target=self._grab_loop,
+            name=f"grab-{self.device.stable_id}",
+            daemon=True,
+        )
+        self._grab_thread.start()
+
+    def _grab_loop(self) -> None:
+        # Continuously drains the driver's frame queue so retrieve() always
+        # decodes the most recently captured frame instead of a stale,
+        # backlogged one.
+        while not self._stop_event.is_set():
+            with self._lock:
+                capture = self.capture
+                if capture is None:
+                    return
+                ok = capture.grab()
+            if ok:
+                self._frame_ready.set()
+            else:
+                time.sleep(0.001)
+
     def get_frame(self) -> np.ndarray | None:
         if not self.connected or self.capture is None:
             return None
-        ok, frame = self.capture.read()
+        if not self._frame_ready.wait(timeout=1.0):
+            return None
+        with self._lock:
+            if self.capture is None:
+                return None
+            ok, frame = self.capture.retrieve()
+            self._frame_ready.clear()
         return frame if ok else None
 
     def stop(self) -> None:
-        if self.capture is not None:
-            self.capture.release()
-        self.capture = None
+        self._stop_event.set()
+        if self._grab_thread is not None:
+            self._grab_thread.join(timeout=2.0)
+        self._grab_thread = None
+        with self._lock:
+            if self.capture is not None:
+                self.capture.release()
+            self.capture = None
         self.connected = False
+        self._frame_ready.clear()
 
 
 class FishEyeManager:
