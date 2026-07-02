@@ -19,26 +19,26 @@ quest3_data_recorder:
     warmup_frames: 10
     # Fish-eye (V4L2/UVC) cameras matched by usb_path or serial + stream_index.
     # Find usb_path via `v4l2-ctl --list-devices` (or check /sys/class/video4linux).
-    camera_names: ["left_camera", "right_camera"]
-    left_camera:
+    camera_names: ["r_left_camera", "r_right_camera"]
+    r_left_camera:
       usb_path: "1-7.3"
       serial: ""
       stream_index: 0
-    right_camera:
+    r_right_camera:
       usb_path: "1-7.2"
       serial: ""
       stream_index: 0
 
-    #arm_names: ["left", "right"]
-    arm_names: ["right"]
+    arm_names: ["left", "right"]
 
-    #left:
-    #  cmd_topic: /left/cartesian_impedance_controller/equilibrium_pose
-    #  current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
-    #  gripper_joint_states_topic: /left/franka_gripper/joint_states
+    left:
+      cmd_topic: /left/cartesian_impedance_controller/equilibrium_pose
+      current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
+      gripper_joint_states_topic: /left/franka_gripper/joint_states
+      wrench_topic: /left/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
 
     right:
-      cmd_topic: /cartesian_impedance_controller/equilibrium_pose
-      current_pose_topic: /franka_robot_state_broadcaster/current_pose
-      gripper_joint_states_topic: /franka_gripper/joint_states
-      wrench_topic: /franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
+      cmd_topic: /right/cartesian_impedance_controller/equilibrium_pose
+      current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
+      gripper_joint_states_topic: /right/franka_gripper/joint_states
+      wrench_topic: /right/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame

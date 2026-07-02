@@ -123,6 +123,11 @@ def generate_launch_description():
     right_wuji_serial = LaunchConfiguration("right_wuji_serial")
     wuji_dry_run = LaunchConfiguration("wuji_dry_run")
     wuji_cpu = LaunchConfiguration("wuji_cpu")
+    start_data_recorder = LaunchConfiguration("start_data_recorder")
+    data_recorder_config_file = LaunchConfiguration("data_recorder_config_file")
+    out_data_dir = LaunchConfiguration("out_data_dir")
+    require_cameras = LaunchConfiguration("require_cameras")
+    data_recorder_cpu = LaunchConfiguration("data_recorder_cpu")
 
     default_config = PathJoinSubstitution(
         [FindPackageShare("quest3_oculus_rviz"), "config", "simple_dual_impedance_teleop.yaml"]
@@ -133,6 +138,9 @@ def generate_launch_description():
             "config",
             "wuji_trigger_hand.yaml",
         ]
+    )
+    default_data_recorder_config = PathJoinSubstitution(
+        [FindPackageShare("quest3_oculus_rviz"), "config", "data_recorder.yaml"]
     )
 
     return LaunchDescription(
@@ -178,6 +186,17 @@ def generate_launch_description():
             DeclareLaunchArgument("right_wuji_serial", default_value="3671354F3333"),
             DeclareLaunchArgument("wuji_dry_run", default_value="false"),
             DeclareLaunchArgument("wuji_cpu", default_value=""),
+            DeclareLaunchArgument("start_data_recorder", default_value="false"),
+            DeclareLaunchArgument(
+                "data_recorder_config_file",
+                default_value=default_data_recorder_config,
+            ),
+            DeclareLaunchArgument(
+                "out_data_dir",
+                default_value="/tmp/quest3_recordings",
+            ),
+            DeclareLaunchArgument("require_cameras", default_value="true"),
+            DeclareLaunchArgument("data_recorder_cpu", default_value=""),
             http_control_include(
                 condition=start_left_arm,
                 namespace="left",
@@ -277,6 +296,24 @@ def generate_launch_description():
                 ],
                 condition=IfCondition(start_wuji_trigger_hand),
                 prefix=_taskset_prefix(wuji_cpu),
+            ),
+            Node(
+                package="quest3_oculus_rviz",
+                executable="data_recorder_node",
+                name="quest3_data_recorder",
+                output="screen",
+                prefix=_taskset_prefix(data_recorder_cpu),
+                parameters=[
+                    data_recorder_config_file,
+                    {
+                        "out_data_dir": out_data_dir,
+                        "require_cameras": ParameterValue(
+                            require_cameras,
+                            value_type=bool,
+                        ),
+                    },
+                ],
+                condition=IfCondition(start_data_recorder),
             ),
         ]
     )

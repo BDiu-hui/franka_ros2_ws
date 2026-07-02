@@ -82,6 +82,12 @@ quest_teleop:
   right_wuji_serial: 3671354F3333
   # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
   wuji_dry_run: false
+  # 是否启动双臂 HDF5 数据采集节点（依赖 Quest 按钮和鱼眼相机，属于 teleop 侧）。
+  start_data_recorder: true
+  # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
+  require_cameras: true
+  # 采集数据输出目录。
+  out_data_dir: /tmp/quest3_recordings
   # Quest reader 绑定 CPU。
   quest_reader_cpu: 14
   # 左摇操节点绑定 CPU。
@@ -90,6 +96,8 @@ quest_teleop:
   right_teleop_cpu: 18
   # Wuji trigger hand 节点绑定 CPU。
   wuji_cpu: 20
+  # 数据采集节点绑定 CPU。
+  data_recorder_cpu: 22
 
 # 一条命令启动全部节点: 左右 Franka 控制栈 + Quest reader + 左右摇操 + Wuji。
 # 这是最方便的入口；如果还出现 reflex 干扰，再改用 franka_stack + quest_teleop 双终端方式隔离。
@@ -148,6 +156,12 @@ all_in_one:
   right_wuji_serial: 3671354F3333
   # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
   wuji_dry_run: false
+  # 是否启动双臂 HDF5 数据采集节点。
+  start_data_recorder: true
+  # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
+  require_cameras: true
+  # 采集数据输出目录。
+  out_data_dir: /tmp/quest3_recordings
   # Quest reader 绑定 CPU。
   quest_reader_cpu: 14
   # 左摇操节点绑定 CPU。
@@ -156,3 +170,5 @@ all_in_one:
   right_teleop_cpu: 18
   # Wuji trigger hand 节点绑定 CPU。
   wuji_cpu: 20
+  # 数据采集节点绑定 CPU。
+  data_recorder_cpu: 22
