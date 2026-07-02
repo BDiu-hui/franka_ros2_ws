@@ -135,7 +135,7 @@ class DryRunHand:
 
 
 class WujiTriggerHandNode(Node):
-    """Map Quest index triggers to released/close_type3 Wuji hand poses."""
+    """Toggle Wuji hand released/close_type3 poses from Quest index triggers."""
 
     def __init__(self) -> None:
         super().__init__("wuji_trigger_hand")
@@ -216,6 +216,7 @@ class WujiTriggerHandNode(Node):
 
         self.workers: dict[str, HandCommandWorker] = {}
         self.trigger_pressed: dict[str, bool] = {}
+        self.hand_closed: dict[str, bool] = {}
         self.last_buttons_time: float | None = None
         self.timeout_release_active = False
         self._destroying = False
@@ -227,6 +228,7 @@ class WujiTriggerHandNode(Node):
                 worker = HandCommandWorker(self, config, hand)
                 self.workers[config.side] = worker
                 self.trigger_pressed[config.side] = False
+                self.hand_closed[config.side] = False
                 worker.write_enabled(True)
                 if self.release_on_startup:
                     worker.request_pose(
@@ -442,10 +444,15 @@ class WujiTriggerHandNode(Node):
             if is_pressed == was_pressed:
                 continue
             self.trigger_pressed[side] = is_pressed
-            if is_pressed:
+
+            if not is_pressed:
+                continue
+
+            self.hand_closed[side] = not self.hand_closed[side]
+            if self.hand_closed[side]:
                 worker.request_pose("close_type3", config.closed_pose)
             else:
-                worker.request_pose("released", config.released_pose)
+                worker.request_pose("released_toggle", config.released_pose)
 
     def watchdog_callback(self) -> None:
         if not self.release_on_timeout or self.buttons_timeout <= 0.0:
@@ -457,9 +464,10 @@ class WujiTriggerHandNode(Node):
 
         released_any = False
         for side, worker in self.workers.items():
-            if not self.trigger_pressed[side]:
-                continue
             self.trigger_pressed[side] = False
+            if not self.hand_closed[side]:
+                continue
+            self.hand_closed[side] = False
             worker.request_pose(
                 "released_timeout",
                 worker.config.released_pose,
@@ -469,7 +477,7 @@ class WujiTriggerHandNode(Node):
         if released_any and not self.timeout_release_active:
             self.get_logger().warn(
                 "Quest buttons timed out; requested released pose for "
-                "pressed Wuji hands."
+                "closed Wuji hands."
             )
         self.timeout_release_active = True
 

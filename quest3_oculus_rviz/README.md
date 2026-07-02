@@ -22,7 +22,7 @@ delta，把 delta 映射到机器人 TCP 目标位姿，然后发布到
 | launch 文件 | 作用 |
 | --- | --- |
 | `simple_impedance_teleop.launch.py` | 单臂阻抗摇操，一起启动 Franka HTTP/阻抗控制栈和 Quest teleop |
-| `simple_dual_impedance_teleop.launch.py` | 双臂阻抗摇操，启动左右两套阻抗控制栈、一个 Quest reader、两个 teleop 节点 |
+| `simple_dual_impedance_teleop.launch.py` | 双臂阻抗摇操，可一条命令启动，也可把 Franka 控制栈和 Quest teleop 分进程启动 |
 | `rviz.launch.py` | Quest pose/RViz 预览和旧链路调试 |
 
 ## 构建
@@ -80,8 +80,8 @@ ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
 控制逻辑与双臂完全相同:
 
 ```text
-按住 rightTrig  -> right_close_type3
-松开 rightTrig  -> right_released
+第一次按下 rightTrig  -> right_close_type3
+第二次按下 rightTrig  -> right_released
 ```
 
 机械臂仍由 `rightGrip` 使能，灵巧手由 `rightTrig` 控制。两者可以同时按下。
@@ -101,8 +101,8 @@ ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
 left_wuji_enabled:=true right_wuji_enabled:=false
 ```
 
-左手仍需先在 `config/wuji_trigger_hand.yaml` 中填写实测的
-`left_released_pose`、`left_closed_pose`，并设置 `left_pose_calibrated: true`。
+左手 `released` / `close_type3` 姿态已经写入
+`config/wuji_trigger_hand.yaml`，但默认不启用左手硬件。
 
 ## 双臂阻抗摇操
 
@@ -135,39 +135,85 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 | left | `/left/franka_robot_state_broadcaster/current_pose` | `/left/cartesian_impedance_controller/equilibrium_pose` |
 | right | `/right/franka_robot_state_broadcaster/current_pose` | `/right/cartesian_impedance_controller/equilibrium_pose` |
 
+### 双臂分进程绑核启动
+
+所有参数都放在 `config/simple_dual_split_launch.yaml` 里:
+
+| profile | 作用 | 包装 launch |
+| --- | --- | --- |
+| `all_in_one` | 一条命令启动左右 Franka、Quest reader、左右摇操节点和 Wuji | `simple_dual_all.launch.py` |
+| `franka_stack` | 只启动左右 Franka 控制栈 | `simple_dual_franka_stack.launch.py` |
+| `quest_teleop` | 只启动 Quest reader、左右摇操节点和 Wuji | `simple_dual_quest_teleop.launch.py` |
+
+一条命令启动全部节点:
+
+```bash
+cd ~/franka_ros2_ws
+source setup_env.bash
+ros2 launch quest3_oculus_rviz simple_dual_all.launch.py
+```
+
+如果要把 Franka 1 kHz 控制栈和 Quest 摇操/灵巧手分成不同 launch 进程，使用两个终端启动。
+
+终端 1 只启动左右 Franka 控制栈，不启动 Quest reader 和 teleop:
+
+```bash
+cd ~/franka_ros2_ws
+source setup_env.bash
+ros2 launch quest3_oculus_rviz simple_dual_franka_stack.launch.py
+```
+
+终端 2 只启动 Quest reader、左右摇操节点和 Wuji，不重复启动 Franka stack:
+
+```bash
+cd ~/franka_ros2_ws
+source setup_env.bash
+ros2 launch quest3_oculus_rviz simple_dual_quest_teleop.launch.py
+```
+
+左手 Wuji 不接或暂时不用时，把 `simple_dual_split_launch.yaml` 的
+`quest_teleop.left_wuji_enabled` 改成 `false`。这些 CPU 编号只是推荐起点，可以根据
+`htop` 和实际 CPU 拓扑调整。
+
+如果想临时选择其他 profile，也可以直接使用通用入口:
+
+```bash
+ros2 launch quest3_oculus_rviz simple_dual_profile.launch.py profile:=all_in_one
+ros2 launch quest3_oculus_rviz simple_dual_profile.launch.py profile:=franka_stack
+ros2 launch quest3_oculus_rviz simple_dual_profile.launch.py profile:=quest_teleop
+```
+
 ## Trigger 控制舞肌灵巧手
 
 `wuji_trigger_hand_node` 是独立的灵巧手硬件节点，订阅 `/quest3/buttons`:
 
 | 手柄输入 | 灵巧手动作 |
 | --- | --- |
-| `leftTrig` 按下 | 左手下发 `close_type3` |
-| `leftTrig` 松开 | 左手下发 `released` |
-| `rightTrig` 按下 | 右手下发 `right_close_type3` |
-| `rightTrig` 松开 | 右手下发 `right_released` |
+| `leftTrig` 每按下一次 | 左手在 `close_type3` / `released` 之间切换 |
+| `rightTrig` 每按下一次 | 右手在 `right_close_type3` / `right_released` 之间切换 |
 
-节点只在 trigger 状态变化时下发一次姿态，不会按 50 Hz 重复写 USB。按键消息超过
-`buttons_timeout_sec` 未更新时，已经按下的手会自动回到 `released`。
+节点只在 trigger 从松开变为按下的上升沿下发一次姿态，不会按 50 Hz 重复写 USB。
+松开 trigger 不会再自动释放；再次按下才会释放。按键消息超过
+`buttons_timeout_sec` 未更新时，已经闭合的手会自动回到 `released`。
 不接硬件调试时，可设置 ROS 参数 `dry_run:=true`，或在双臂 launch 中传入
 `wuji_dry_run:=true`。
 
 当前机械臂摇操仍使用 `leftGrip/rightGrip`，与灵巧手 trigger 输入相互独立。
 
-右手姿态已经从 `/home/lumos/wj_ws/wj_test_right.py` 写入
-`config/wuji_trigger_hand.yaml`。当前工作区没有左手的实测姿态，因此默认:
+左右手姿态已经写入 `config/wuji_trigger_hand.yaml`。为了避免误连左手硬件，
+当前仍默认只启用右手:
 
 ```yaml
 left_enabled: false
-left_pose_calibrated: false
+left_pose_calibrated: true
 right_enabled: true
 right_pose_calibrated: true
 ```
 
-左手投入使用前，需要把 `left_released_pose` 和 `left_closed_pose` 分别替换为实测的
-20 维关节值，然后设置:
+左手投入使用时，在 launch 命令后增加:
 
-```yaml
-left_pose_calibrated: true
+```bash
+left_wuji_enabled:=true
 ```
 
 只启动 Quest 和右侧灵巧手时，可随双臂 launch 一起启动:
@@ -210,12 +256,18 @@ ros2 run quest3_oculus_rviz wuji_trigger_hand_node \
 [right] Connecting Wuji hand serial=3671354F3333
 ```
 
-如果同时连接并启用两只灵巧手，程序无法仅凭 USB 信息判断哪只是左手、哪只是右手，
-因此必须明确传入两个不同的序列号:
+当前 `config/wuji_trigger_hand.yaml` 已固定左右手序列号:
+
+```yaml
+left_serial: 3566377E3533
+right_serial: 3671354F3333
+```
+
+如果临时更换硬件，也可以在 launch 命令里覆盖:
 
 ```bash
-left_wuji_serial:=左手实际序列号 \
-right_wuji_serial:=右手实际序列号
+left_wuji_serial:=3566377E3533 \
+right_wuji_serial:=3671354F3333
 ```
 
 USB 序列号必须使用设备描述符里的 `iSerial`，不能使用之前记录的编号。查询命令:

@@ -1,0 +1,158 @@
+# 双臂启动参数 profile。
+# 用法:
+#   ros2 launch quest3_oculus_rviz simple_dual_all.launch.py
+# 或:
+#   ros2 launch quest3_oculus_rviz simple_dual_profile.launch.py profile:=all_in_one
+#
+# CPU 参数为空字符串时表示不绑核；填数字或范围时会通过 taskset 绑定，例如:
+#   8      -> 只绑定 CPU 8
+#   10,12  -> 绑定 CPU 10 和 12
+#   10-11  -> 绑定 CPU 10 到 11
+
+# 只启动左右 Franka 控制栈，不启动 Quest reader、摇操和 Wuji。
+# 适合把 1 kHz 机械臂控制和上层 teleop 分成两个 launch 进程时使用。
+franka_stack:
+  # 左臂 Franka FCI IP。
+  left_robot_ip: 172.16.0.2
+  # 右臂 Franka FCI IP。
+  right_robot_ip: 172.16.0.3
+  # 机器人型号，FR3 使用 fr3。
+  robot_type: fr3
+  # 是否加载 Franka gripper；当前使用外部 Wuji 手时通常为 false。
+  load_gripper: false
+  # 是否启动 RViz。
+  start_rviz: false
+  # 双臂 TF 的基坐标系名称。
+  base_frame: base
+  # 是否启动左臂控制栈。
+  start_left_arm: true
+  # 是否启动右臂控制栈。
+  start_right_arm: true
+  # 是否启动 Quest 手柄/头显 TF reader；此 profile 只跑机械臂，所以为 false。
+  start_quest_reader: false
+  # 是否启动左手柄到左臂的摇操节点。
+  start_left_teleop: false
+  # 是否启动右手柄到右臂的摇操节点。
+  start_right_teleop: false
+  # 是否启动 Wuji trigger hand 节点。
+  start_wuji_trigger_hand: false
+  # 启动后是否自动 activate cartesian_impedance_controller。
+  auto_start_impedance: true
+  # 出现 reflex 后是否自动 recover；调试 reflex 原因时建议 false，避免掩盖首次错误。
+  auto_recover_after_reflex: false
+  # 左臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
+  left_ros2_control_cpu: 2
+  # 左臂 Franka 辅助节点绑定 CPU，例如 robot_state_broadcaster、joint_state 等非主控制任务。
+  left_franka_aux_cpu: 4
+  # 左臂 HTTP server 绑定 CPU，负责 /getstate、/health 等 HTTP 接口。
+  left_http_server_cpu: 6
+  # 左臂 reflex watchdog 绑定 CPU，负责监听错误并按配置恢复。
+  left_watchdog_cpu: 6
+  # 右臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
+  right_ros2_control_cpu: 8
+  # 右臂 Franka 辅助节点绑定 CPU，例如 robot_state_broadcaster、joint_state 等非主控制任务。
+  right_franka_aux_cpu: 10
+  # 右臂 HTTP server 绑定 CPU，负责 /getstate、/health 等 HTTP 接口。
+  right_http_server_cpu: 12
+  # 右臂 reflex watchdog 绑定 CPU，负责监听错误并按配置恢复。
+  right_watchdog_cpu: 12
+
+# 只启动 Quest reader、左右摇操节点和 Wuji，不重复启动 Franka 控制栈。
+# 使用这个 profile 前，需要先用 franka_stack 把左右 Franka 控制栈启动起来。
+quest_teleop:
+  # 不启动左臂控制栈，避免和 franka_stack 重复启动。
+  start_left_arm: false
+  # 不启动右臂控制栈，避免和 franka_stack 重复启动。
+  start_right_arm: false
+  # 启动 Quest reader，发布手柄和头显 TF/按钮输入。
+  start_quest_reader: true
+  # 启动左手柄控制左臂的摇操节点。
+  start_left_teleop: true
+  # 启动右手柄控制右臂的摇操节点。
+  start_right_teleop: true
+  # 启动 Wuji trigger hand 节点。
+  start_wuji_trigger_hand: true
+  # 是否启用左 Wuji 手。
+  left_wuji_enabled: true
+  # 是否启用右 Wuji 手；右手不接或暂时不用时设为 false。
+  right_wuji_enabled: false
+  # 左 Wuji 手 USB 序列号，用于自动匹配正确串口。
+  left_wuji_serial: 3566377E3533
+  # 右 Wuji 手 USB 序列号，用于自动匹配正确串口。
+  right_wuji_serial: 3671354F3333
+  # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
+  wuji_dry_run: false
+  # Quest reader 绑定 CPU。
+  quest_reader_cpu: 14
+  # 左摇操节点绑定 CPU。
+  left_teleop_cpu: 16
+  # 右摇操节点绑定 CPU。
+  right_teleop_cpu: 18
+  # Wuji trigger hand 节点绑定 CPU。
+  wuji_cpu: 20
+
+# 一条命令启动全部节点: 左右 Franka 控制栈 + Quest reader + 左右摇操 + Wuji。
+# 这是最方便的入口；如果还出现 reflex 干扰，再改用 franka_stack + quest_teleop 双终端方式隔离。
+all_in_one:
+  # 左臂 Franka FCI IP。
+  left_robot_ip: 172.16.0.2
+  # 右臂 Franka FCI IP。
+  right_robot_ip: 172.16.0.3
+  # 机器人型号，FR3 使用 fr3。
+  robot_type: fr3
+  # 是否加载 Franka gripper；当前使用外部 Wuji 手时通常为 false。
+  load_gripper: false
+  # 是否启动 RViz。
+  start_rviz: false
+  # 双臂 TF 的基坐标系名称。
+  base_frame: base
+  # 是否启动左臂控制栈。
+  start_left_arm: true
+  # 是否启动右臂控制栈。
+  start_right_arm: true
+  # 是否启动 Quest 手柄/头显 TF reader。
+  start_quest_reader: true
+  # 是否启动左手柄控制左臂的摇操节点。
+  start_left_teleop: true
+  # 是否启动右手柄控制右臂的摇操节点。
+  start_right_teleop: true
+  # 是否启动 Wuji trigger hand 节点。
+  start_wuji_trigger_hand: true
+  # 启动后是否自动 activate cartesian_impedance_controller。
+  auto_start_impedance: true
+  # 出现 reflex 后是否自动 recover；调试 reflex 原因时建议 false。
+  auto_recover_after_reflex: false
+  # 左臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
+  left_ros2_control_cpu: 2
+  # 左臂 Franka 辅助节点绑定 CPU。
+  left_franka_aux_cpu: 4
+  # 左臂 HTTP server 绑定 CPU。
+  left_http_server_cpu: 6
+  # 左臂 reflex watchdog 绑定 CPU。
+  left_watchdog_cpu: 6
+  # 右臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
+  right_ros2_control_cpu: 8
+  # 右臂 Franka 辅助节点绑定 CPU。
+  right_franka_aux_cpu: 10
+  # 右臂 HTTP server 绑定 CPU。
+  right_http_server_cpu: 12
+  # 右臂 reflex watchdog 绑定 CPU。
+  right_watchdog_cpu: 12
+  # 是否启用左 Wuji 手。
+  left_wuji_enabled: true
+  # 是否启用右 Wuji 手。
+  right_wuji_enabled: true
+  # 左 Wuji 手 USB 序列号，用于自动匹配正确串口。
+  left_wuji_serial: 3566377E3533
+  # 右 Wuji 手 USB 序列号，用于自动匹配正确串口。
+  right_wuji_serial: 3671354F3333
+  # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
+  wuji_dry_run: false
+  # Quest reader 绑定 CPU。
+  quest_reader_cpu: 14
+  # 左摇操节点绑定 CPU。
+  left_teleop_cpu: 16
+  # 右摇操节点绑定 CPU。
+  right_teleop_cpu: 18
+  # Wuji trigger hand 节点绑定 CPU。
+  wuji_cpu: 20

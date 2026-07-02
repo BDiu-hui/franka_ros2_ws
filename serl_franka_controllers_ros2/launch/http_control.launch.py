@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -10,6 +10,51 @@ from launch_ros.substitutions import FindPackageShare
 
 def _taskset_prefix(cpu):
     return PythonExpression(["'taskset -c ", cpu, "' if '", cpu, "' else ''"])
+
+
+def _extra_controller_spawners(context, namespace, controllers_yaml):
+    resolved_namespace = namespace.perform(context)
+    resolved_controllers_yaml = controllers_yaml.perform(context)
+    return [
+        TimerAction(
+            period=4.0,
+            actions=[
+                Node(
+                    package="controller_manager",
+                    executable="spawner",
+                    namespace=resolved_namespace,
+                    arguments=[
+                        "cartesian_pose_command_controller",
+                        "--inactive",
+                        "--param-file",
+                        resolved_controllers_yaml,
+                        "--controller-manager-timeout",
+                        "30",
+                    ],
+                    output="screen",
+                ),
+            ],
+        ),
+        TimerAction(
+            period=6.0,
+            actions=[
+                Node(
+                    package="controller_manager",
+                    executable="spawner",
+                    namespace=resolved_namespace,
+                    arguments=[
+                        "joint_position_controller",
+                        "--inactive",
+                        "--param-file",
+                        resolved_controllers_yaml,
+                        "--controller-manager-timeout",
+                        "30",
+                    ],
+                    output="screen",
+                ),
+            ],
+        ),
+    ]
 
 
 def generate_launch_description():
@@ -186,43 +231,10 @@ def generate_launch_description():
                     "start_impedance_controller": start_impedance_controller,
                 }.items(),
             ),
-            TimerAction(
-                period=4.0,
-                actions=[
-                    Node(
-                        package="controller_manager",
-                        executable="spawner",
-                        namespace=namespace,
-                        arguments=[
-                            "cartesian_pose_command_controller",
-                            "--inactive",
-                            "--param-file",
-                            controllers_yaml,
-                            "--controller-manager-timeout",
-                            "30",
-                        ],
-                        output="screen",
-                    ),
-                ],
-            ),
-            TimerAction(
-                period=6.0,
-                actions=[
-                    Node(
-                        package="controller_manager",
-                        executable="spawner",
-                        namespace=namespace,
-                        arguments=[
-                            "joint_position_controller",
-                            "--inactive",
-                            "--param-file",
-                            controllers_yaml,
-                            "--controller-manager-timeout",
-                            "30",
-                        ],
-                        output="screen",
-                    ),
-                ],
+            OpaqueFunction(
+                function=lambda context: _extra_controller_spawners(
+                    context, namespace, controllers_yaml
+                )
             ),
             Node(
                 package="serl_franka_controllers_ros2",
