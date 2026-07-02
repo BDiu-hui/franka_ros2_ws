@@ -177,6 +177,7 @@ class OpenCVCamera:
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         capture.set(cv2.CAP_PROP_FPS, self.fps)
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         actual_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))

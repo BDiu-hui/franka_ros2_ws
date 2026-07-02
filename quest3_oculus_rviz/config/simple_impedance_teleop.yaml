@@ -48,18 +48,18 @@ simple_quest_impedance_teleop:
     # First lift 5 cm along the robot base/world +Z axis without rotating.
     random_pose_lift_height_m: 0.02
     random_pose_lift_duration_sec: 1.5
-    random_pose_approach_offset_m: 0.05
-    random_pose_position_std_low_m: 0.01
-    random_pose_position_std_high_m: 0.10
-    random_pose_rotation_std_low_deg: 2.0
-    random_pose_rotation_std_high_deg: 10.0
-    random_pose_position_bound_m: 0.20
-    random_pose_rotation_bound_deg: 15.0
+    random_pose_approach_offset_m: 0.04
+    random_pose_position_std_low_m: 0.005
+    random_pose_position_std_high_m: 0.01
+    random_pose_rotation_std_low_deg: 15.0
+    random_pose_rotation_std_high_deg: 15.0
+    random_pose_position_bound_m: 0.02
+    random_pose_rotation_bound_deg: 20.0
     random_pose_move_duration_sec: 3.0
     random_pose_seed: -1
     random_pose_use_configured_insertion_pose: false
     random_pose_configured_insertion_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    random_pose_match_collector_high_orientation: true
+    random_pose_match_collector_high_orientation: false
 
     workspace_min: [0.20, -0.45, 0.08]
     workspace_max: [0.80, 0.45, 0.75]

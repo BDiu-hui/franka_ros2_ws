@@ -66,7 +66,7 @@
         - fr3_joint5
         - fr3_joint6
         - fr3_joint7
-      translational_stiffness: 2000.000000
+      translational_stiffness: 2020.000000
       translational_damping: 89.000000
       rotational_stiffness: 300.000000
       rotational_damping: 7.000000

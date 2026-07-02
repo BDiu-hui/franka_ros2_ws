@@ -667,7 +667,8 @@ ros2 launch serl_franka_controllers_ros2 http_control.launch.py \
   auto_recover_after_reflex:=false \
   ros2_control_cpu:=2 \
   franka_aux_cpu:=4 \
-  http_server_cpu:=6
+  http_server_cpu:=6 \
+  watchdog_cpu:=6
 ```
 
 终端 2：只启动 Quest teleop + recorder，不重复启动 Franka stack：
@@ -687,5 +688,5 @@ ros2 launch quest3_oculus_rviz simple_impedance_teleop.launch.py \
   out_data_dir:=$HOME/quest3_recordings \
   random_pose_after_recording:=true \
   quest_teleop_cpu:=8 \
-  data_recorder_cpu:=10-11
+  data_recorder_cpu:=10,12
 ```
