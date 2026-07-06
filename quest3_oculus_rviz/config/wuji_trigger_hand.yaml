@@ -15,6 +15,14 @@ wuji_trigger_hand:
     shutdown_release_hold_sec: 0.5
     disable_on_shutdown: true
     dry_run: false
+    publish_joint_states: true
+    # target: publish the latest 20D command sent to Wuji; this is non-blocking
+    # and keeps trigger response reliable. actual can block in the SDK on this
+    # setup, so only use it for isolated debugging.
+    joint_state_source: target
+    joint_state_topic_prefix: /wuji
+    joint_state_rate_hz: 30.0
+    joint_state_read_timeout_sec: 0.03
 
     # Left-hand poses are calibrated but disabled by default. Enable explicitly
     # with left_wuji_enabled:=true when the left Wuji hand is connected.
