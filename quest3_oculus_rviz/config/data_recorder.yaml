@@ -34,11 +34,11 @@ quest3_data_recorder:
     #   1-7.3 -> /dev/video2, 1-7.2 -> /dev/video0
     camera_names: ["l_left_camera", "l_right_camera", "r_left_camera", "r_right_camera"]
     l_left_camera:
-      usb_path: "1-2.3"
+      usb_path: "1-2.2"
       serial: ""
       stream_index: 0
     l_right_camera:
-      usb_path: "1-2.2"
+      usb_path: "1-2.3"
       serial: ""
       stream_index: 0
     r_left_camera:

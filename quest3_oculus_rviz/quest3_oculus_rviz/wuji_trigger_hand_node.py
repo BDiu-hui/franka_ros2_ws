@@ -53,6 +53,14 @@ def flatten_joint_positions(values: Any, value_name: str) -> list[float]:
     return [float(value) for value in flat]
 
 
+def positions_as_5x4(values: list[float], value_name: str) -> list[list[float]]:
+    if len(values) != 20:
+        raise ValueError(f"{value_name} must contain exactly 20 values")
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError(f"{value_name} contains a non-finite value")
+    return [values[index:index + 4] for index in range(0, 20, 4)]
+
+
 @dataclass(frozen=True)
 class HandConfig:
     side: str
@@ -66,10 +74,19 @@ class HandConfig:
 class HandCommandWorker:
     """Serialize SDK writes for one hand without blocking ROS callbacks."""
 
-    def __init__(self, node: Node, config: HandConfig, hand: Any) -> None:
+    def __init__(
+        self,
+        node: Node,
+        config: HandConfig,
+        hand: Any,
+        trajectory_duration_sec: float,
+        trajectory_rate_hz: float,
+    ) -> None:
         self._node = node
         self.config = config
         self.hand = hand
+        self.trajectory_duration_sec = max(float(trajectory_duration_sec), 0.0)
+        self.trajectory_rate_hz = max(float(trajectory_rate_hz), 1.0)
         self._hand_lock = threading.Lock()
         self._last_target_lock = threading.Lock()
         self._last_target_positions: list[float] | None = flatten_joint_positions(
@@ -92,9 +109,20 @@ class HandCommandWorker:
             self._condition.notify()
 
     def write_pose_sync(self, pose: list[list[float]]) -> None:
+        positions = flatten_joint_positions(
+            pose,
+            f"{self.config.side}_target_positions",
+        )
+        self._write_flat_positions_sync(positions)
+
+    def _write_flat_positions_sync(self, positions: list[float]) -> None:
+        pose = positions_as_5x4(
+            [float(value) for value in positions],
+            f"{self.config.side}_target_positions",
+        )
         with self._hand_lock:
             self.hand.write_joint_target_position_unchecked(pose)
-        self._set_last_target_positions(pose)
+        self._set_last_target_positions_flat(positions)
 
     def write_enabled(self, enabled: bool) -> None:
         with self._hand_lock:
@@ -140,23 +168,77 @@ class HandCommandWorker:
                 self._pending = None
 
             try:
-                self.write_pose_sync(pose)
-                self._node.get_logger().info(
-                    f"[{self.config.side}] Wuji pose command: {pose_name}"
-                )
+                completed = self._write_trajectory(pose_name, pose)
+                if completed:
+                    self._node.get_logger().info(
+                        f"[{self.config.side}] Wuji pose command completed: "
+                        f"{pose_name}"
+                    )
             except Exception as exc:  # noqa: BLE001
                 self._node.get_logger().error(
                     f"[{self.config.side}] Failed to write Wuji pose "
                     f"'{pose_name}': {exc!r}"
                 )
 
+    def _write_trajectory(self, pose_name: str, pose: list[list[float]]) -> bool:
+        target_positions = flatten_joint_positions(
+            pose,
+            f"{self.config.side}_{pose_name}",
+        )
+        start_positions = self.last_target_positions() or target_positions
+        steps = max(
+            1,
+            int(math.ceil(self.trajectory_duration_sec * self.trajectory_rate_hz)),
+        )
+        if self.trajectory_duration_sec <= 0.0 or steps <= 1:
+            self._write_flat_positions_sync(target_positions)
+            return True
+
+        step_period = self.trajectory_duration_sec / float(steps)
+        self._node.get_logger().info(
+            f"[{self.config.side}] Wuji trajectory start: {pose_name}, "
+            f"duration={self.trajectory_duration_sec:.3f}s, steps={steps}"
+        )
+
+        for step in range(1, steps + 1):
+            alpha = float(step) / float(steps)
+            command = [
+                start + (target - start) * alpha
+                for start, target in zip(start_positions, target_positions)
+            ]
+            self._write_flat_positions_sync(command)
+
+            with self._condition:
+                if self._stop_requested:
+                    return False
+                if self._pending is not None:
+                    self._node.get_logger().info(
+                        f"[{self.config.side}] Wuji trajectory interrupted: "
+                        f"{pose_name}"
+                    )
+                    return False
+                if step < steps:
+                    self._condition.wait(timeout=step_period)
+                    if self._stop_requested:
+                        return False
+                    if self._pending is not None:
+                        self._node.get_logger().info(
+                            f"[{self.config.side}] Wuji trajectory interrupted: "
+                            f"{pose_name}"
+                        )
+                        return False
+        return True
+
     def _set_last_target_positions(self, pose: list[list[float]]) -> None:
         positions = flatten_joint_positions(
             pose,
             f"{self.config.side}_target_positions",
         )
+        self._set_last_target_positions_flat(positions)
+
+    def _set_last_target_positions_flat(self, positions: list[float]) -> None:
         with self._last_target_lock:
-            self._last_target_positions = positions
+            self._last_target_positions = [float(value) for value in positions]
 
 
 class DryRunHand:
@@ -190,6 +272,8 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("shutdown_release_hold_sec", 0.5)
         self.declare_parameter("disable_on_shutdown", True)
         self.declare_parameter("dry_run", False)
+        self.declare_parameter("trajectory_duration_sec", 0.5)
+        self.declare_parameter("trajectory_rate_hz", 50.0)
         self.declare_parameter("publish_joint_states", True)
         self.declare_parameter("joint_state_source", "target")
         self.declare_parameter("joint_state_topic_prefix", "/wuji")
@@ -244,6 +328,14 @@ class WujiTriggerHandNode(Node):
             self.get_parameter("disable_on_shutdown").value
         )
         self.dry_run = bool(self.get_parameter("dry_run").value)
+        self.trajectory_duration_sec = max(
+            float(self.get_parameter("trajectory_duration_sec").value),
+            0.0,
+        )
+        self.trajectory_rate_hz = max(
+            float(self.get_parameter("trajectory_rate_hz").value),
+            1.0,
+        )
         self.publish_joint_states = bool(
             self.get_parameter("publish_joint_states").value
         )
@@ -291,7 +383,13 @@ class WujiTriggerHandNode(Node):
             for config in configs:
                 hand = self._connect_hand(config)
                 hand.disable_thread_safe_check()
-                worker = HandCommandWorker(self, config, hand)
+                worker = HandCommandWorker(
+                    self,
+                    config,
+                    hand,
+                    self.trajectory_duration_sec,
+                    self.trajectory_rate_hz,
+                )
                 self.workers[config.side] = worker
                 self.trigger_pressed[config.side] = False
                 self.hand_closed[config.side] = False
@@ -340,6 +438,8 @@ class WujiTriggerHandNode(Node):
             f"press_threshold={self.press_threshold:.2f}, "
             f"release_threshold={self.release_threshold:.2f}, "
             f"timeout={self.buttons_timeout:.2f}s, dry_run={self.dry_run}, "
+            f"trajectory_duration={self.trajectory_duration_sec:.3f}s, "
+            f"trajectory_rate={self.trajectory_rate_hz:.1f}Hz, "
             f"joint_state_topics={state_topics}"
         )
 

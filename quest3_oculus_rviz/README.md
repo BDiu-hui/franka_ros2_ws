@@ -192,8 +192,10 @@ ros2 launch quest3_oculus_rviz simple_dual_profile.launch.py profile:=quest_tele
 | `leftTrig` 每按下一次 | 左手在 `close_type3` / `released` 之间切换 |
 | `rightTrig` 每按下一次 | 右手在 `right_close_type3` / `right_released` 之间切换 |
 
-节点只在 trigger 从松开变为按下的上升沿下发一次姿态，不会按 50 Hz 重复写 USB。
-松开 trigger 不会再自动释放；再次按下才会释放。按键消息超过
+节点只在 trigger 从松开变为按下的上升沿启动一次切换；切换内部会在
+`released` 和 `closed` 两个 20 维姿态之间做线性插值并分段下发。默认
+`trajectory_duration_sec: 0.5`、`trajectory_rate_hz: 50.0`，也就是每次开合约
+0.5 秒、25 个中间点。松开 trigger 不会再自动释放；再次按下才会释放。按键消息超过
 `buttons_timeout_sec` 未更新时，已经闭合的手会自动回到 `released`。
 不接硬件调试时，可设置 ROS 参数 `dry_run:=true`，或在双臂 launch 中传入
 `wuji_dry_run:=true`。
