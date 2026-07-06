@@ -2,11 +2,12 @@
 
 Subscribes to per-arm equilibrium (`cmds`) and current poses, gripper joint
 states, and Quest3 buttons. Pulls camera frames directly from V4L2/UVC
-fish-eye cameras via the local FishEyeManager. Press the configured start
-button (default ``A``) to start a new episode and the stop button (default
-``B``) to stop and save it as ``episode_<N>.hdf5``. Press the configured
-delete button (default ``X``) to delete the most recently saved episode from
-the current recorder session.
+fish-eye cameras via the local FishEyeManager. In ``image_storage=jpeg`` mode,
+MJPEG camera buffers are written to HDF5 directly without decoding to raw BGR
+images. Press the configured start button (default ``A``) to start a new
+episode and the stop button (default ``B``) to stop and save it as
+``episode_<N>.hdf5``. Press the configured delete button (default ``X``) to
+delete the most recently saved episode from the current recorder session.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ class Quest3DataRecorderNode(Node):
         self.declare_parameter("image_height", 720)
         self.declare_parameter("image_fps", 30)
         self.declare_parameter("image_fourcc", "MJPG")
+        self.declare_parameter("image_storage", "jpeg")
         self.declare_parameter("warmup_frames", 10)
         # Fish-eye cameras are matched on V4L2 usb_path/serial/stream_index,
         # declared per-camera (same flattening trick as the arm topics below).
@@ -103,6 +105,9 @@ class Quest3DataRecorderNode(Node):
         self.image_height = int(self.get_parameter("image_height").value)
         self.image_fps = int(self.get_parameter("image_fps").value)
         self.image_fourcc = str(self.get_parameter("image_fourcc").value)
+        self.image_storage = str(self.get_parameter("image_storage").value).lower()
+        if self.image_storage not in ("jpeg", "raw"):
+            raise ValueError("image_storage must be 'jpeg' or 'raw'")
         self.warmup_frames = int(self.get_parameter("warmup_frames").value)
 
         cam_names = [str(x) for x in self.get_parameter("camera_names").value]
@@ -162,7 +167,9 @@ class Quest3DataRecorderNode(Node):
         self._current_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
         self._wrench_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
         self._gripper_buf: dict[str, list[float]] = {n: [] for n in self.arm_names}
-        self._image_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.cameras_cfg}
+        self._image_buf: dict[str, list[np.ndarray | bytes]] = {
+            n: [] for n in self.cameras_cfg
+        }
 
         # Recording control signals.
         self._recording = False
@@ -220,6 +227,7 @@ class Quest3DataRecorderNode(Node):
                 fps=self.image_fps,
                 fourcc=self.image_fourcc,
                 warmup_frames=self.warmup_frames,
+                raw_jpeg=self.image_storage == "jpeg",
             )
 
         self._worker = threading.Thread(target=self._recording_worker, daemon=True)
@@ -229,6 +237,7 @@ class Quest3DataRecorderNode(Node):
             "Quest3 data recorder ready. "
             f"out_data_dir={self.out_data_dir}, "
             f"arms={self.arm_names}, cameras={list(self.cameras_cfg.keys())}, "
+            f"image_storage={self.image_storage}, "
             f"trigger: {self.start_button_analog}=start / "
             f"{self.stop_button_analog}=stop / {self.delete_button}=delete-last"
         )
@@ -376,7 +385,7 @@ class Quest3DataRecorderNode(Node):
                 self._episode_start_time = loop_start
                 self.get_logger().info("recording started")
 
-            frames: dict[str, np.ndarray] = {}
+            frames: dict[str, np.ndarray | bytes] = {}
             if self.camera_manager is not None:
                 frames = self.camera_manager.get_all_frames()
 
@@ -412,7 +421,7 @@ class Quest3DataRecorderNode(Node):
         for cam in self._image_buf:
             self._image_buf[cam].clear()
 
-    def _append_sample(self, frames: dict[str, np.ndarray]) -> bool:
+    def _append_sample(self, frames: dict[str, np.ndarray | bytes]) -> bool:
         with self._state_lock:
             cmds = {n: self._latest_cmd[n] for n in self.arm_names}
             currents = {n: self._latest_current[n] for n in self.arm_names}
@@ -455,6 +464,21 @@ class Quest3DataRecorderNode(Node):
         return True
 
     # ---- HDF5 writing --------------------------------------------------
+
+    @staticmethod
+    def _jpeg_frame_to_uint8(frame: np.ndarray | bytes) -> np.ndarray:
+        if isinstance(frame, bytes):
+            return np.frombuffer(frame, dtype=np.uint8)
+        if isinstance(frame, bytearray):
+            return np.frombuffer(frame, dtype=np.uint8)
+        if isinstance(frame, memoryview):
+            return np.frombuffer(frame, dtype=np.uint8)
+        arr = np.asarray(frame)
+        if arr.dtype == np.uint8 and arr.ndim == 1:
+            return arr
+        raise TypeError(
+            "image_storage=jpeg expects compressed JPEG bytes from the camera"
+        )
 
     def _next_episode_path(self) -> Path:
         indices: list[int] = []
@@ -514,16 +538,32 @@ class Quest3DataRecorderNode(Node):
                     )
 
                 images_grp = obs.create_group("images")
+                images_grp.attrs["storage"] = self.image_storage
+                images_grp.attrs["width"] = self.image_width
+                images_grp.attrs["height"] = self.image_height
+                images_grp.attrs["fps"] = self.image_fps
                 for cam in self.cameras_cfg:
                     if not self._image_buf[cam]:
                         continue
-                    arr = np.stack(self._image_buf[cam][:n], axis=0)
-                    images_grp.create_dataset(
-                        cam,
-                        data=arr,
-                        dtype=arr.dtype,
-                        chunks=(1, *arr.shape[1:]),
-                    )
+                    if self.image_storage == "jpeg":
+                        ds = images_grp.create_dataset(
+                            cam,
+                            shape=(n,),
+                            dtype=h5py.vlen_dtype(np.dtype("uint8")),
+                        )
+                        for index, frame in enumerate(self._image_buf[cam][:n]):
+                            ds[index] = self._jpeg_frame_to_uint8(frame)
+                        ds.attrs["encoding"] = "jpeg"
+                        ds.attrs["container"] = "vlen_uint8"
+                    else:
+                        arr = np.stack(self._image_buf[cam][:n], axis=0)
+                        ds = images_grp.create_dataset(
+                            cam,
+                            data=arr,
+                            dtype=arr.dtype,
+                            chunks=(1, *arr.shape[1:]),
+                        )
+                        ds.attrs["encoding"] = "bgr8"
         except Exception as e:
             self.get_logger().error(f"failed to write {target}: {e}")
             return

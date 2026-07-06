@@ -5,10 +5,18 @@ has no runtime dependency on the easy_dp repo. Cameras are USB UVC devices
 matched by ``usb_path``/``serial``/``stream_index`` rather than by RealSense
 serial. ``FishEyeManager`` mirrors the old ``RealSenseManager`` interface
 (``initialize_all`` / ``get_all_frames`` / ``stop_all`` / ``list_cameras``).
+When ``raw_jpeg`` is enabled, MJPEG buffers are read directly from V4L2 mmap
+without decoding through OpenCV.
 """
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import fcntl
+import mmap
+import os
+import select
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -138,6 +146,12 @@ def fourcc_to_str(fourcc: int | float) -> str:
     return "".join(chr((int(fourcc) >> (8 * i)) & 0xFF) for i in range(4))
 
 
+def str_to_fourcc(fourcc: str) -> int:
+    if len(fourcc) != 4:
+        raise ValueError("fourcc must contain exactly 4 characters")
+    return sum(ord(ch) << (8 * i) for i, ch in enumerate(fourcc))
+
+
 def normalize_opencv_config(cfg: Any) -> dict[str, Any]:
     if not isinstance(cfg, Mapping) and not hasattr(cfg, "items"):
         raise TypeError("fish_eye camera config must be a mapping")
@@ -145,6 +159,154 @@ def normalize_opencv_config(cfg: Any) -> dict[str, Any]:
     if not normalized:
         raise ValueError("fish_eye camera config must contain at least one camera")
     return normalized
+
+
+V4L2_BUF_TYPE_VIDEO_CAPTURE = 1
+V4L2_MEMORY_MMAP = 1
+V4L2_FIELD_ANY = 0
+
+IOC_NRBITS = 8
+IOC_TYPEBITS = 8
+IOC_SIZEBITS = 14
+IOC_NRSHIFT = 0
+IOC_TYPESHIFT = IOC_NRSHIFT + IOC_NRBITS
+IOC_SIZESHIFT = IOC_TYPESHIFT + IOC_TYPEBITS
+IOC_DIRSHIFT = IOC_SIZESHIFT + IOC_SIZEBITS
+IOC_WRITE = 1
+IOC_READ = 2
+
+
+def _ioc(direction: int, request_type: int, number: int, size: int) -> int:
+    return (
+        (direction << IOC_DIRSHIFT)
+        | (request_type << IOC_TYPESHIFT)
+        | (number << IOC_NRSHIFT)
+        | (size << IOC_SIZESHIFT)
+    )
+
+
+def _iowr(request_type: str, number: int, struct_type: type[ctypes.Structure]) -> int:
+    return _ioc(IOC_READ | IOC_WRITE, ord(request_type), number, ctypes.sizeof(struct_type))
+
+
+def _iow(request_type: str, number: int, arg_type: type[ctypes._SimpleCData]) -> int:
+    return _ioc(IOC_WRITE, ord(request_type), number, ctypes.sizeof(arg_type))
+
+
+class _Timeval(ctypes.Structure):
+    _fields_ = [
+        ("tv_sec", ctypes.c_long),
+        ("tv_usec", ctypes.c_long),
+    ]
+
+
+class _V4L2Timecode(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("frames", ctypes.c_uint8),
+        ("seconds", ctypes.c_uint8),
+        ("minutes", ctypes.c_uint8),
+        ("hours", ctypes.c_uint8),
+        ("userbits", ctypes.c_uint8 * 4),
+    ]
+
+
+class _V4L2PixFormat(ctypes.Structure):
+    _fields_ = [
+        ("width", ctypes.c_uint32),
+        ("height", ctypes.c_uint32),
+        ("pixelformat", ctypes.c_uint32),
+        ("field", ctypes.c_uint32),
+        ("bytesperline", ctypes.c_uint32),
+        ("sizeimage", ctypes.c_uint32),
+        ("colorspace", ctypes.c_uint32),
+        ("priv", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("ycbcr_enc", ctypes.c_uint32),
+        ("quantization", ctypes.c_uint32),
+        ("xfer_func", ctypes.c_uint32),
+    ]
+
+
+class _V4L2FormatUnion(ctypes.Union):
+    _fields_ = [
+        ("pix", _V4L2PixFormat),
+        ("raw_data", ctypes.c_uint8 * 200),
+    ]
+
+
+class _V4L2Format(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("_padding", ctypes.c_uint32),
+        ("fmt", _V4L2FormatUnion),
+    ]
+
+
+class _V4L2RequestBuffers(ctypes.Structure):
+    _fields_ = [
+        ("count", ctypes.c_uint32),
+        ("type", ctypes.c_uint32),
+        ("memory", ctypes.c_uint32),
+        ("capabilities", ctypes.c_uint32),
+        ("flags", ctypes.c_uint8),
+        ("reserved", ctypes.c_uint8 * 3),
+    ]
+
+
+class _V4L2BufferUnion(ctypes.Union):
+    _fields_ = [
+        ("offset", ctypes.c_uint32),
+        ("userptr", ctypes.c_ulong),
+        ("planes", ctypes.c_void_p),
+        ("fd", ctypes.c_int32),
+    ]
+
+
+class _V4L2RequestUnion(ctypes.Union):
+    _fields_ = [
+        ("request_fd", ctypes.c_int32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
+class _V4L2Buffer(ctypes.Structure):
+    _fields_ = [
+        ("index", ctypes.c_uint32),
+        ("type", ctypes.c_uint32),
+        ("bytesused", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("field", ctypes.c_uint32),
+        ("timestamp", _Timeval),
+        ("timecode", _V4L2Timecode),
+        ("sequence", ctypes.c_uint32),
+        ("memory", ctypes.c_uint32),
+        ("m", _V4L2BufferUnion),
+        ("length", ctypes.c_uint32),
+        ("reserved2", ctypes.c_uint32),
+        ("request", _V4L2RequestUnion),
+    ]
+
+
+VIDIOC_S_FMT = _iowr("V", 5, _V4L2Format)
+VIDIOC_REQBUFS = _iowr("V", 8, _V4L2RequestBuffers)
+VIDIOC_QUERYBUF = _iowr("V", 9, _V4L2Buffer)
+VIDIOC_QBUF = _iowr("V", 15, _V4L2Buffer)
+VIDIOC_DQBUF = _iowr("V", 17, _V4L2Buffer)
+VIDIOC_STREAMON = _iow("V", 18, ctypes.c_int)
+VIDIOC_STREAMOFF = _iow("V", 19, ctypes.c_int)
+
+
+def _xioctl(fd: int, request: int, arg: Any) -> None:
+    while True:
+        try:
+            fcntl.ioctl(fd, request, arg)
+            return
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                continue
+            raise
 
 
 class OpenCVCamera:
@@ -253,6 +415,186 @@ class OpenCVCamera:
         self._frame_ready.clear()
 
 
+class RawMJPEGCamera:
+    """V4L2 mmap camera that stores compressed MJPEG/JPEG bytes directly."""
+
+    def __init__(
+        self,
+        device: V4L2Device,
+        width: int,
+        height: int,
+        fps: int,
+        fourcc: str,
+    ) -> None:
+        if fourcc.upper() not in ("MJPG", "JPEG"):
+            raise ValueError("raw_jpeg mode requires image_fourcc MJPG or JPEG")
+        self.device = device
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.fourcc = fourcc.upper()
+        self.fd: int | None = None
+        self.buffers: list[mmap.mmap] = []
+        self.connected = False
+        self._lock = threading.Lock()
+        self._frame_ready = threading.Event()
+        self._stop_event = threading.Event()
+        self._grab_thread: threading.Thread | None = None
+        self._latest_frame: bytes | None = None
+
+    def initialize(self) -> None:
+        fd = os.open(str(self.device.device_path), os.O_RDWR | os.O_NONBLOCK)
+        self.fd = fd
+        try:
+            fmt = _V4L2Format()
+            fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            fmt.fmt.pix.width = self.width
+            fmt.fmt.pix.height = self.height
+            fmt.fmt.pix.pixelformat = str_to_fourcc(self.fourcc)
+            fmt.fmt.pix.field = V4L2_FIELD_ANY
+            _xioctl(fd, VIDIOC_S_FMT, fmt)
+
+            actual_width = int(fmt.fmt.pix.width)
+            actual_height = int(fmt.fmt.pix.height)
+            actual_fourcc = fourcc_to_str(fmt.fmt.pix.pixelformat)
+            if (actual_width, actual_height) != (self.width, self.height):
+                raise RuntimeError(
+                    f"camera {self.device.stable_id} rejected resolution "
+                    f"{self.width}x{self.height}; actual {actual_width}x{actual_height}"
+                )
+            if actual_fourcc not in ("MJPG", "JPEG"):
+                raise RuntimeError(
+                    f"camera {self.device.stable_id} returned fourcc={actual_fourcc}; "
+                    "raw_jpeg mode requires MJPG/JPEG"
+                )
+
+            req = _V4L2RequestBuffers()
+            req.count = 4
+            req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            req.memory = V4L2_MEMORY_MMAP
+            _xioctl(fd, VIDIOC_REQBUFS, req)
+            if req.count < 2:
+                raise RuntimeError(
+                    f"camera {self.device.stable_id} did not allocate enough buffers"
+                )
+
+            self.buffers = []
+            for index in range(int(req.count)):
+                buf = _V4L2Buffer()
+                buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                buf.memory = V4L2_MEMORY_MMAP
+                buf.index = index
+                _xioctl(fd, VIDIOC_QUERYBUF, buf)
+                self.buffers.append(
+                    mmap.mmap(
+                        fd,
+                        int(buf.length),
+                        mmap.MAP_SHARED,
+                        mmap.PROT_READ | mmap.PROT_WRITE,
+                        offset=int(buf.m.offset),
+                    )
+                )
+                _xioctl(fd, VIDIOC_QBUF, buf)
+
+            buf_type = ctypes.c_int(V4L2_BUF_TYPE_VIDEO_CAPTURE)
+            _xioctl(fd, VIDIOC_STREAMON, buf_type)
+        except Exception:
+            self.stop()
+            raise
+
+        self.connected = True
+        print(
+            f"Opened raw MJPEG {self.device.device_path}: {self.device.stable_id}, "
+            f"{actual_width}x{actual_height}, requested_fps={self.fps}, "
+            f"fourcc={actual_fourcc}"
+        )
+
+        self._stop_event.clear()
+        self._frame_ready.clear()
+        self._grab_thread = threading.Thread(
+            target=self._grab_loop,
+            name=f"raw-mjpeg-{self.device.stable_id}",
+            daemon=True,
+        )
+        self._grab_thread.start()
+
+    def _grab_loop(self) -> None:
+        while not self._stop_event.is_set():
+            frame = self._read_one(timeout_sec=0.5)
+            if frame is None:
+                continue
+            with self._lock:
+                self._latest_frame = frame
+            self._frame_ready.set()
+
+    def _read_one(self, timeout_sec: float) -> bytes | None:
+        fd = self.fd
+        if fd is None:
+            return None
+        ready, _, _ = select.select([fd], [], [], timeout_sec)
+        if not ready:
+            return None
+
+        buf = _V4L2Buffer()
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
+        buf.memory = V4L2_MEMORY_MMAP
+        try:
+            _xioctl(fd, VIDIOC_DQBUF, buf)
+        except OSError as exc:
+            if exc.errno == errno.EAGAIN:
+                return None
+            raise
+
+        try:
+            if int(buf.index) >= len(self.buffers):
+                return None
+            mapped = self.buffers[int(buf.index)]
+            return bytes(mapped[: int(buf.bytesused)])
+        finally:
+            try:
+                _xioctl(fd, VIDIOC_QBUF, buf)
+            except OSError:
+                self._stop_event.set()
+
+    def get_frame(self) -> bytes | None:
+        if not self.connected:
+            return None
+        if not self._frame_ready.wait(timeout=1.0):
+            return None
+        with self._lock:
+            return self._latest_frame
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._grab_thread is not None:
+            self._grab_thread.join(timeout=2.0)
+        self._grab_thread = None
+
+        fd = self.fd
+        self.fd = None
+        if fd is not None:
+            try:
+                buf_type = ctypes.c_int(V4L2_BUF_TYPE_VIDEO_CAPTURE)
+                _xioctl(fd, VIDIOC_STREAMOFF, buf_type)
+            except OSError:
+                pass
+        for mapped in self.buffers:
+            try:
+                mapped.close()
+            except OSError:
+                pass
+        self.buffers = []
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        self.connected = False
+        self._latest_frame = None
+        self._frame_ready.clear()
+
+
 class FishEyeManager:
     """Manager class for multiple V4L2/UVC fish-eye cameras."""
 
@@ -263,6 +605,7 @@ class FishEyeManager:
         fps: int = 30,
         fourcc: str = "MJPG",
         warmup_frames: int = 10,
+        raw_jpeg: bool = False,
     ) -> None:
         if len(fourcc) != 4:
             raise ValueError("fish_eye camera fourcc must contain exactly 4 characters")
@@ -273,6 +616,7 @@ class FishEyeManager:
         self.fps = fps
         self.fourcc = fourcc
         self.warmup_frames = warmup_frames
+        self.raw_jpeg = raw_jpeg
         self.cameras: dict[str, dict[str, Any]] = {}
 
     def initialize_all(self, cfg: Any = None) -> bool:
@@ -284,7 +628,8 @@ class FishEyeManager:
         try:
             for camera_name, device_cfg in device_configs.items():
                 device = resolve_v4l2_device(camera_name, device_cfg, detected_devices)
-                camera = OpenCVCamera(
+                camera_cls = RawMJPEGCamera if self.raw_jpeg else OpenCVCamera
+                camera = camera_cls(
                     device=device,
                     width=self.width,
                     height=self.height,

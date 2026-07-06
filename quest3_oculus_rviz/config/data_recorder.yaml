@@ -16,10 +16,25 @@ quest3_data_recorder:
     image_height: 720
     image_fps: 30
     image_fourcc: MJPG
+    # jpeg: write compressed MJPEG/JPEG bytes directly from V4L2 to HDF5.
+    # raw: old OpenCV path, decodes frames to BGR arrays before saving.
+    image_storage: jpeg
     warmup_frames: 10
     # Fish-eye (V4L2/UVC) cameras matched by usb_path or serial + stream_index.
-    # Find usb_path via `v4l2-ctl --list-devices` (or check /sys/class/video4linux).
-    camera_names: ["r_left_camera", "r_right_camera"]
+    # These A031-PC2.1-ZC cameras all report the same USB serial (SN0001), so
+    # serial cannot distinguish them on this machine. Use usb_path + stream_index.
+    # Current index-0 video nodes:
+    #   1-2.3 -> /dev/video6, 1-2.2 -> /dev/video4
+    #   1-7.3 -> /dev/video2, 1-7.2 -> /dev/video0
+    camera_names: ["l_left_camera", "l_right_camera", "r_left_camera", "r_right_camera"]
+    l_left_camera:
+      usb_path: "1-2.3"
+      serial: ""
+      stream_index: 0
+    l_right_camera:
+      usb_path: "1-2.2"
+      serial: ""
+      stream_index: 0
     r_left_camera:
       usb_path: "1-7.3"
       serial: ""

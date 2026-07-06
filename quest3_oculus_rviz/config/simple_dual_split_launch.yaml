@@ -39,7 +39,7 @@ franka_stack:
   # 启动后是否自动 activate cartesian_impedance_controller。
   auto_start_impedance: true
   # 出现 reflex 后是否自动 recover；调试 reflex 原因时建议 false，避免掩盖首次错误。
-  auto_recover_after_reflex: false
+  auto_recover_after_reflex: true
   # 左臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
   left_ros2_control_cpu: 2
   # 左臂 Franka 辅助节点绑定 CPU，例如 robot_state_broadcaster、joint_state 等非主控制任务。
@@ -75,7 +75,7 @@ quest_teleop:
   # 是否启用左 Wuji 手。
   left_wuji_enabled: true
   # 是否启用右 Wuji 手；右手不接或暂时不用时设为 false。
-  right_wuji_enabled: false
+  right_wuji_enabled: true
   # 左 Wuji 手 USB 序列号，用于自动匹配正确串口。
   left_wuji_serial: 3566377E3533
   # 右 Wuji 手 USB 序列号，用于自动匹配正确串口。
@@ -87,7 +87,7 @@ quest_teleop:
   # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
   require_cameras: true
   # 采集数据输出目录。
-  out_data_dir: /tmp/quest3_recordings
+  out_data_dir: "/home/lumos/quest3_recordings"
   # Quest reader 绑定 CPU。
   quest_reader_cpu: 14
   # 左摇操节点绑定 CPU。
@@ -161,7 +161,7 @@ all_in_one:
   # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
   require_cameras: true
   # 采集数据输出目录。
-  out_data_dir: /tmp/quest3_recordings
+  out_data_dir: "/home/lumos/quest3_recordings"
   # Quest reader 绑定 CPU。
   quest_reader_cpu: 14
   # 左摇操节点绑定 CPU。
