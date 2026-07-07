@@ -13,6 +13,8 @@ delete the most recently saved episode from the current recorder session.
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -54,6 +56,11 @@ class Quest3DataRecorderNode(Node):
             "episode_saved_topic",
             "/quest3/data_recorder/episode_saved",
         )
+        self.declare_parameter("voice_announce_enabled", True)
+        self.declare_parameter("voice_command", "spd-say -l en")
+        self.declare_parameter("voice_start_text", "Recording started")
+        self.declare_parameter("voice_stop_text", "Recording stopped")
+        self.declare_parameter("voice_delete_text", "Data deleted")
 
         self.declare_parameter("require_cameras", True)
         self.declare_parameter("image_width", 1280)
@@ -106,6 +113,14 @@ class Quest3DataRecorderNode(Node):
         self.episode_saved_topic = str(
             self.get_parameter("episode_saved_topic").value
         )
+        self.voice_announce_enabled = bool(
+            self.get_parameter("voice_announce_enabled").value
+        )
+        self.voice_command = str(self.get_parameter("voice_command").value)
+        self.voice_start_text = str(self.get_parameter("voice_start_text").value)
+        self.voice_stop_text = str(self.get_parameter("voice_stop_text").value)
+        self.voice_delete_text = str(self.get_parameter("voice_delete_text").value)
+        self._voice_warned = False
         self.require_cameras = bool(self.get_parameter("require_cameras").value)
         self.image_width = int(self.get_parameter("image_width").value)
         self.image_height = int(self.get_parameter("image_height").value)
@@ -280,6 +295,26 @@ class Quest3DataRecorderNode(Node):
 
     # ---- callbacks -----------------------------------------------------
 
+    def _announce(self, text: str) -> None:
+        if not self.voice_announce_enabled or not text.strip():
+            return
+        command = shlex.split(self.voice_command)
+        if not command:
+            return
+        try:
+            subprocess.Popen(
+                [*command, text],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            if not self._voice_warned:
+                self._voice_warned = True
+                self.get_logger().warn(
+                    f"voice announcement command failed: {exc}"
+                )
+
     @staticmethod
     def _pose_to_xyz_euler(
         msg: PoseStamped | CartesianImpedanceCommand,
@@ -432,6 +467,7 @@ class Quest3DataRecorderNode(Node):
                 self._recording = True
                 self._episode_start_time = loop_start
                 self.get_logger().info("recording started")
+                self._announce(self.voice_start_text)
 
             frames: dict[str, np.ndarray | bytes] = {}
             if self.camera_manager is not None:
@@ -451,6 +487,7 @@ class Quest3DataRecorderNode(Node):
                 self._stop_event.clear()
                 if self._recording:
                     self._recording = False
+                    self._announce(self.voice_stop_text)
                     self._save_current_episode()
 
             if self._delete_event.is_set():
@@ -675,6 +712,7 @@ class Quest3DataRecorderNode(Node):
 
         self._last_saved_path = None
         self.get_logger().info(f"deleted {target}")
+        self._announce(self.voice_delete_text)
 
 
 def main() -> None:

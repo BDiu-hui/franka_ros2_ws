@@ -10,6 +10,15 @@ quest3_data_recorder:
     delete_button: X
     trigger_threshold: 0.5
     episode_saved_topic: /quest3/data_recorder/episode_saved
+    # Voice prompts for recording lifecycle events. Uses the USB/default audio
+    # output selected by the desktop audio system. Set enabled=false to mute.
+    voice_announce_enabled: true
+    # The default speech-dispatcher setup on this machine has no Chinese voice,
+    # so keep these prompts ASCII/English to avoid "Chinese character" readouts.
+    voice_command: spd-say -l en
+    voice_start_text: Recording started
+    voice_stop_text: Recording stopped
+    voice_delete_text: Data deleted
 
     require_cameras: true
     image_width: 1280
