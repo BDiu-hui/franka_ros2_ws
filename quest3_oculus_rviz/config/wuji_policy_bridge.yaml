@@ -1,0 +1,3 @@
+wuji_trigger_hand:
+  ros__parameters:
+    control_mode: service

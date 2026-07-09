@@ -13,6 +13,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
+from quest3_oculus_rviz.wuji_command_server import WujiCommandServer
+
 
 RIGHT_RELEASED = [
     1.001, -0.083, -0.059, -0.188,
@@ -33,6 +35,9 @@ RIGHT_CLOSE_TYPE3 = [
 WUJI_USB_VENDOR_ID = "0483"
 WUJI_USB_PRODUCT_ID = "2000"
 AUTO_SERIAL_VALUES = {"", "auto"}
+CONTROL_MODE_TRIGGER = "trigger"
+CONTROL_MODE_SERVICE = "service"
+CONTROL_MODES = {CONTROL_MODE_TRIGGER, CONTROL_MODE_SERVICE}
 
 
 def as_5x4(values: list[float], parameter_name: str) -> list[list[float]]:
@@ -279,6 +284,9 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("joint_state_topic_prefix", "/wuji")
         self.declare_parameter("joint_state_rate_hz", 30.0)
         self.declare_parameter("joint_state_read_timeout_sec", 0.03)
+        self.declare_parameter("control_mode", CONTROL_MODE_TRIGGER)
+        self.declare_parameter("command_server_host", "127.0.0.1")
+        self.declare_parameter("command_server_port", 8765)
 
         self.declare_parameter("left_enabled", False)
         self.declare_parameter("left_pose_calibrated", False)
@@ -357,6 +365,20 @@ class WujiTriggerHandNode(Node):
             float(self.get_parameter("joint_state_read_timeout_sec").value),
             0.0,
         )
+        self.control_mode = str(
+            self.get_parameter("control_mode").value
+        ).strip().lower()
+        if self.control_mode not in CONTROL_MODES:
+            raise ValueError(
+                f"control_mode must be one of {sorted(CONTROL_MODES)}, "
+                f"got {self.control_mode!r}"
+            )
+        self.command_server_host = str(
+            self.get_parameter("command_server_host").value
+        ).strip()
+        self.command_server_port = int(
+            self.get_parameter("command_server_port").value
+        )
         self._validate_thresholds()
 
         configs = [
@@ -378,6 +400,7 @@ class WujiTriggerHandNode(Node):
         self.last_buttons_time: float | None = None
         self.timeout_release_active = False
         self._destroying = False
+        self.command_server: WujiCommandServer | None = None
 
         try:
             for config in configs:
@@ -395,10 +418,13 @@ class WujiTriggerHandNode(Node):
                 self.hand_closed[config.side] = False
                 worker.write_enabled(True)
                 if self.release_on_startup:
-                    worker.request_pose(
-                        "released_startup",
-                        config.released_pose,
-                    )
+                    if self.control_mode == CONTROL_MODE_SERVICE:
+                        worker.write_pose_sync(config.released_pose)
+                    else:
+                        worker.request_pose(
+                            "released_startup",
+                            config.released_pose,
+                        )
                 if self.publish_joint_states:
                     topic = (
                         f"{self.joint_state_topic_prefix}/"
@@ -411,16 +437,31 @@ class WujiTriggerHandNode(Node):
             self._cleanup_hands(release=True, disable=True)
             raise
 
-        self.buttons_sub = self.create_subscription(
-            String,
-            self.buttons_topic,
-            self.buttons_callback,
-            10,
-        )
-        self.watchdog_timer = self.create_timer(
-            1.0 / watchdog_rate,
-            self.watchdog_callback,
-        )
+        self.buttons_sub = None
+        self.watchdog_timer = None
+        if self.control_mode == CONTROL_MODE_TRIGGER:
+            self.buttons_sub = self.create_subscription(
+                String,
+                self.buttons_topic,
+                self.buttons_callback,
+                10,
+            )
+            self.watchdog_timer = self.create_timer(
+                1.0 / watchdog_rate,
+                self.watchdog_callback,
+            )
+        else:
+            try:
+                self.command_server = WujiCommandServer(
+                    self.command_server_host,
+                    self.command_server_port,
+                    self._write_service_joint_targets,
+                    lambda: tuple(self.workers),
+                )
+                self.command_server.start()
+            except Exception:
+                self._cleanup_hands(release=True, disable=True)
+                raise
         self.joint_state_timer = None
         if self.publish_joint_states:
             self.joint_state_timer = self.create_timer(
@@ -440,8 +481,23 @@ class WujiTriggerHandNode(Node):
             f"timeout={self.buttons_timeout:.2f}s, dry_run={self.dry_run}, "
             f"trajectory_duration={self.trajectory_duration_sec:.3f}s, "
             f"trajectory_rate={self.trajectory_rate_hz:.1f}Hz, "
-            f"joint_state_topics={state_topics}"
+            f"joint_state_topics={state_topics}, control_mode={self.control_mode}, "
+            f"command_server={None if self.command_server is None else self.command_server.url}"
         )
+
+    def _write_service_joint_targets(
+        self,
+        side: str,
+        positions: list[float],
+    ) -> None:
+        worker = self.workers.get(side)
+        if worker is None:
+            raise KeyError(f"Wuji hand {side!r} is not enabled")
+        pose = positions_as_5x4(
+            flatten_joint_positions(positions, f"{side}_service_joint_targets"),
+            f"{side}_service_joint_targets",
+        )
+        worker.write_pose_sync(pose)
 
     def _load_hand_config(self, side: str) -> HandConfig | None:
         if not bool(self.get_parameter(f"{side}_enabled").value):
@@ -701,6 +757,9 @@ class WujiTriggerHandNode(Node):
         if self._destroying:
             return True
         self._destroying = True
+        if self.command_server is not None:
+            self.command_server.stop()
+            self.command_server = None
         self._cleanup_hands(
             release=self.release_on_shutdown,
             disable=self.disable_on_shutdown,

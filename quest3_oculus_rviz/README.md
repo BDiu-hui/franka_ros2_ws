@@ -247,6 +247,29 @@ ros2 run quest3_oculus_rviz wuji_trigger_hand_node \
   --params-file /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml
 ```
 
+扩散策略推理使用 `service` 模式。该模式不订阅 Quest trigger，也不运行按键超时释放逻辑，
+避免遥操作命令覆盖策略输出；USB 连接、关节使能和退出释放仍由本节点统一管理。后加载的
+`wuji_policy_bridge.yaml` 只覆盖控制模式:
+
+```bash
+source setup_env.bash
+ros2 run quest3_oculus_rviz wuji_trigger_hand_node \
+  --ros-args \
+  --params-file /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml \
+  --params-file /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_policy_bridge.yaml \
+  -p left_enabled:=true \
+  -p right_enabled:=true
+```
+
+服务只允许绑定 loopback，默认监听 `http://127.0.0.1:8765`。启动 EasyDP 前可检查:
+
+```bash
+curl http://127.0.0.1:8765/health
+```
+
+健康响应必须同时包含 `left` 和 `right`。关节目标接口是同步写入：SDK 写入失败会直接返回
+HTTP 错误，调用方不会把“已排队”误认为硬件已经接受。
+
 退出节点时默认先下发 `released`，随后关闭灵巧手关节使能。
 
 当只启用一只灵巧手且 `left_serial/right_serial` 为 `auto` 时，节点会在启动时扫描
