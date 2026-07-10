@@ -26,7 +26,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, WrenchStamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
@@ -70,6 +70,7 @@ class Quest3DataRecorderNode(Node):
         self.declare_parameter("image_storage", "jpeg")
         self.declare_parameter("warmup_frames", 10)
         self.declare_parameter("record_hand_joint_positions", True)
+        self.declare_parameter("record_hand_actual_joint_positions", True)
         self.declare_parameter("hand_joint_count", 20)
         # Fish-eye cameras are matched on V4L2 usb_path/serial/stream_index,
         # declared per-camera (same flattening trick as the arm topics below).
@@ -98,8 +99,18 @@ class Quest3DataRecorderNode(Node):
                 f"/{name}/franka_gripper/joint_states",
             )
             self.declare_parameter(
+                f"{name}.hand_command_topic",
+                f"/hand_{name}/joint_commands",
+            )
+            # Backward-compatible alias used by older configs. For scheme B,
+            # prefer hand_command_topic and record the official driver command.
+            self.declare_parameter(
                 f"{name}.hand_joint_states_topic",
                 f"/wuji/{name}/joint_states",
+            )
+            self.declare_parameter(
+                f"{name}.hand_actual_joint_states_topic",
+                f"/hand_{name}/joint_states",
             )
 
         self.out_data_dir = Path(str(self.get_parameter("out_data_dir").value))
@@ -132,6 +143,9 @@ class Quest3DataRecorderNode(Node):
         self.warmup_frames = int(self.get_parameter("warmup_frames").value)
         self.record_hand_joint_positions = bool(
             self.get_parameter("record_hand_joint_positions").value
+        )
+        self.record_hand_actual_joint_positions = bool(
+            self.get_parameter("record_hand_actual_joint_positions").value
         )
         self.hand_joint_count = max(
             int(self.get_parameter("hand_joint_count").value),
@@ -168,18 +182,38 @@ class Quest3DataRecorderNode(Node):
         for name in self.arm_names:
             # Ensure params exist for any non-default arms supplied via YAML.
             for key in ("cmd_topic", "current_pose_topic", "wrench_topic",
-                        "gripper_joint_states_topic", "hand_joint_states_topic"):
+                        "gripper_joint_states_topic", "hand_command_topic",
+                        "hand_joint_states_topic",
+                        "hand_actual_joint_states_topic"):
                 if not self.has_parameter(f"{name}.{key}"):
                     self.declare_parameter(f"{name}.{key}", "")
+            hand_command_topic = str(
+                self.get_parameter(f"{name}.hand_command_topic").value
+            )
+            if not hand_command_topic:
+                hand_command_topic = str(
+                    self.get_parameter(f"{name}.hand_joint_states_topic").value
+                )
             self.arm_topics[name] = {
                 "cmd": str(self.get_parameter(f"{name}.cmd_topic").value),
                 "current": str(self.get_parameter(f"{name}.current_pose_topic").value),
                 "wrench": str(self.get_parameter(f"{name}.wrench_topic").value),
                 "gripper": str(self.get_parameter(f"{name}.gripper_joint_states_topic").value),
-                "hand": str(self.get_parameter(f"{name}.hand_joint_states_topic").value),
+                "hand": hand_command_topic,
+                "hand_actual": str(
+                    self.get_parameter(f"{name}.hand_actual_joint_states_topic").value
+                ),
             }
             for key, value in self.arm_topics[name].items():
-                if not value and (key != "hand" or self.record_hand_joint_positions):
+                required = key not in ("hand", "hand_actual")
+                required = required or (
+                    key == "hand" and self.record_hand_joint_positions
+                )
+                required = required or (
+                    key == "hand_actual"
+                    and self.record_hand_actual_joint_positions
+                )
+                if not value and required:
                     raise ValueError(f"missing topic for arm '{name}' field '{key}'")
 
         self.out_data_dir.mkdir(parents=True, exist_ok=True)
@@ -191,7 +225,13 @@ class Quest3DataRecorderNode(Node):
         self._latest_wrench: dict[str, np.ndarray | None] = {n: None for n in self.arm_names}
         self._latest_gripper: dict[str, float | None] = {n: None for n in self.arm_names}
         self._latest_hand: dict[str, np.ndarray | None] = {n: None for n in self.arm_names}
+        self._latest_hand_actual: dict[str, np.ndarray | None] = {
+            n: None for n in self.arm_names
+        }
         self._latest_hand_names: dict[str, list[str]] = {n: [] for n in self.arm_names}
+        self._latest_hand_actual_names: dict[str, list[str]] = {
+            n: [] for n in self.arm_names
+        }
 
         # Buffers are owned by the worker thread; no lock needed.
         self._cmd_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
@@ -199,6 +239,9 @@ class Quest3DataRecorderNode(Node):
         self._wrench_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
         self._gripper_buf: dict[str, list[float]] = {n: [] for n in self.arm_names}
         self._hand_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
+        self._hand_actual_buf: dict[str, list[np.ndarray]] = {
+            n: [] for n in self.arm_names
+        }
         self._image_buf: dict[str, list[np.ndarray | bytes]] = {
             n: [] for n in self.cameras_cfg
         }
@@ -248,7 +291,16 @@ class Quest3DataRecorderNode(Node):
                         JointState,
                         topics["hand"],
                         self._make_hand_cb(name),
-                        10,
+                        qos_profile_sensor_data,
+                    )
+                )
+            if self.record_hand_actual_joint_positions:
+                self._subs.append(
+                    self.create_subscription(
+                        JointState,
+                        topics["hand_actual"],
+                        self._make_hand_actual_cb(name),
+                        qos_profile_sensor_data,
                     )
                 )
         self.buttons_sub = self.create_subscription(
@@ -280,6 +332,8 @@ class Quest3DataRecorderNode(Node):
             f"arms={self.arm_names}, cameras={list(self.cameras_cfg.keys())}, "
             f"image_storage={self.image_storage}, "
             f"record_hand_joint_positions={self.record_hand_joint_positions}, "
+            f"record_hand_actual_joint_positions="
+            f"{self.record_hand_actual_joint_positions}, "
             f"trigger: {self.start_button_analog}=start / "
             f"{self.stop_button_analog}=stop / {self.delete_button}=delete-last"
         )
@@ -375,6 +429,19 @@ class Quest3DataRecorderNode(Node):
                 self._latest_hand[name] = positions
                 if msg.name:
                     self._latest_hand_names[name] = list(msg.name[:self.hand_joint_count])
+        return cb
+
+    def _make_hand_actual_cb(self, name: str):
+        def cb(msg: JointState) -> None:
+            if not msg.position:
+                return
+            positions = self._coerce_hand_positions(msg.position)
+            with self._state_lock:
+                self._latest_hand_actual[name] = positions
+                if msg.name:
+                    self._latest_hand_actual_names[name] = list(
+                        msg.name[:self.hand_joint_count]
+                    )
         return cb
 
     def _coerce_hand_positions(self, positions: Any) -> np.ndarray:
@@ -506,6 +573,7 @@ class Quest3DataRecorderNode(Node):
             self._wrench_buf,
             self._gripper_buf,
             self._hand_buf,
+            self._hand_actual_buf,
         ):
             for name in buf:
                 buf[name].clear()
@@ -519,6 +587,9 @@ class Quest3DataRecorderNode(Node):
             wrenches = {n: self._latest_wrench[n] for n in self.arm_names}
             grippers = {n: self._latest_gripper[n] for n in self.arm_names}
             hands = {n: self._latest_hand[n] for n in self.arm_names}
+            hand_actuals = {
+                n: self._latest_hand_actual[n] for n in self.arm_names
+            }
 
         # Require every per-arm channel before we commit a row, so the
         # final dataset shape stays consistent across arms.
@@ -554,6 +625,16 @@ class Quest3DataRecorderNode(Node):
                 self._hand_buf[name].append(
                     hands[name]
                     if hands[name] is not None
+                    else np.full(
+                        self.hand_joint_count,
+                        np.nan,
+                        dtype=np.float32,
+                    )
+                )
+            if self.record_hand_actual_joint_positions:
+                self._hand_actual_buf[name].append(
+                    hand_actuals[name]
+                    if hand_actuals[name] is not None
                     else np.full(
                         self.hand_joint_count,
                         np.nan,
@@ -605,6 +686,8 @@ class Quest3DataRecorderNode(Node):
                     len(self._wrench_buf[name]), len(self._gripper_buf[name]))
             if self.record_hand_joint_positions:
                 n = min(n, len(self._hand_buf[name]))
+            if self.record_hand_actual_joint_positions:
+                n = min(n, len(self._hand_actual_buf[name]))
         if self.camera_manager is not None:
             for cam in self.cameras_cfg:
                 n = min(n, len(self._image_buf[cam]))
@@ -655,6 +738,23 @@ class Quest3DataRecorderNode(Node):
                         ]
                         ds.attrs["joint_names"] = json.dumps(hand_names)
                         ds.attrs["source_topic"] = self.arm_topics[name]["hand"]
+                        ds.attrs["kind"] = "target"
+
+                if self.record_hand_actual_joint_positions:
+                    hand_actual_grp = obs.create_group("hand_actual_joint_positions")
+                    hand_actual_grp.attrs["joint_count"] = self.hand_joint_count
+                    for name in self.arm_names:
+                        ds = hand_actual_grp.create_dataset(
+                            name,
+                            data=np.stack(self._hand_actual_buf[name][:n], axis=0),
+                        )
+                        hand_names = self._latest_hand_actual_names.get(name) or [
+                            f"{name}_wuji_joint_{index:02d}"
+                            for index in range(self.hand_joint_count)
+                        ]
+                        ds.attrs["joint_names"] = json.dumps(hand_names)
+                        ds.attrs["source_topic"] = self.arm_topics[name]["hand_actual"]
+                        ds.attrs["kind"] = "actual"
 
                 images_grp = obs.create_group("images")
                 images_grp.attrs["storage"] = self.image_storage

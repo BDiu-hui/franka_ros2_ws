@@ -15,14 +15,19 @@ wuji_trigger_hand:
     shutdown_release_hold_sec: 0.5
     disable_on_shutdown: true
     dry_run: false
+    # ros2: do not touch the Wuji SDK directly. Publish trajectories to the
+    # official wujihandros2 driver joint_commands topics.
+    # sdk: legacy direct USB control through wujihandpy.
+    control_backend: ros2
     # Linear interpolation between released_pose and closed_pose. With recorder
     # at 30 Hz, 0.5 s gives about 15 visible HDF5 samples across each open/close.
     trajectory_duration_sec: 0.5
     trajectory_rate_hz: 50.0
-    publish_joint_states: true
-    # target: publish the latest 20D command sent to Wuji; this is non-blocking
-    # and keeps trigger response reliable. actual can block in the SDK on this
-    # setup, so only use it for isolated debugging.
+    # Scheme B keeps this node as a command-only bridge. The recorder subscribes
+    # to /hand_left/right/joint_commands for targets and to the official driver
+    # /hand_left/right/joint_states for measured positions.
+    publish_joint_states: false
+    # Only used when publish_joint_states=true for isolated debugging.
     joint_state_source: target
     joint_state_topic_prefix: /wuji
     joint_state_rate_hz: 30.0
@@ -32,12 +37,19 @@ wuji_trigger_hand:
     control_mode: trigger
     command_server_host: 127.0.0.1
     command_server_port: 8765
+    # Only used by control_backend=sdk. With control_backend=ros2, actual
+    # positions come from the official driver /hand_left/right/joint_states.
+    publish_actual_joint_states: false
+    actual_joint_state_rate_hz: 5.0
+    actual_joint_state_read_timeout_sec: 0.005
+    skip_actual_read_while_commanding: true
 
     # Left-hand poses are calibrated but disabled by default. Enable explicitly
     # with left_wuji_enabled:=true when the left Wuji hand is connected.
     left_enabled: false
     left_pose_calibrated: true
     left_serial: 3566377E3533
+    left_command_topic: /hand_left/joint_commands
     left_trigger_value_name: leftTrig
     left_trigger_button_name: LTr
     left_released_pose:
@@ -60,6 +72,7 @@ wuji_trigger_hand:
     right_enabled: true
     right_pose_calibrated: true
     right_serial: 3671354F3333
+    right_command_topic: /hand_right/joint_commands
     right_trigger_value_name: rightTrig
     right_trigger_button_name: RTr
     right_released_pose:

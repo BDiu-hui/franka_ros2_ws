@@ -10,6 +10,7 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
@@ -38,6 +39,7 @@ AUTO_SERIAL_VALUES = {"", "auto"}
 CONTROL_MODE_TRIGGER = "trigger"
 CONTROL_MODE_SERVICE = "service"
 CONTROL_MODES = {CONTROL_MODE_TRIGGER, CONTROL_MODE_SERVICE}
+WUJI_SDK_LOCK = threading.Lock()
 
 
 def as_5x4(values: list[float], parameter_name: str) -> list[list[float]]:
@@ -70,6 +72,7 @@ def positions_as_5x4(values: list[float], value_name: str) -> list[list[float]]:
 class HandConfig:
     side: str
     serial: str
+    command_topic: str
     trigger_value_name: str
     trigger_button_name: str
     released_pose: list[list[float]]
@@ -101,6 +104,8 @@ class HandCommandWorker:
         self._condition = threading.Condition()
         self._pending: tuple[str, list[list[float]]] | None = None
         self._stop_requested = False
+        self._active_lock = threading.Lock()
+        self._command_active = False
         self._thread = threading.Thread(
             target=self._run,
             name=f"wuji_{config.side}_writer",
@@ -126,16 +131,38 @@ class HandCommandWorker:
             f"{self.config.side}_target_positions",
         )
         with self._hand_lock:
-            self.hand.write_joint_target_position_unchecked(pose)
+            with WUJI_SDK_LOCK:
+                self.hand.write_joint_target_position_unchecked(pose)
         self._set_last_target_positions_flat(positions)
 
     def write_enabled(self, enabled: bool) -> None:
         with self._hand_lock:
-            self.hand.write_joint_enabled(enabled)
+            with WUJI_SDK_LOCK:
+                self.hand.write_joint_enabled(enabled)
 
     def read_actual_positions(self, timeout_sec: float) -> list[float]:
         with self._hand_lock:
-            positions = self.hand.read_joint_actual_position(timeout_sec)
+            with WUJI_SDK_LOCK:
+                positions = self.hand.read_joint_actual_position(timeout_sec)
+        return flatten_joint_positions(
+            positions,
+            f"{self.config.side}_actual_positions",
+        )
+
+    def try_read_actual_positions(self, timeout_sec: float) -> list[float] | None:
+        if self.has_pending_or_active_command():
+            return None
+        if not self._hand_lock.acquire(blocking=False):
+            return None
+        try:
+            if not WUJI_SDK_LOCK.acquire(blocking=False):
+                return None
+            try:
+                positions = self.hand.read_joint_actual_position(timeout_sec)
+            finally:
+                WUJI_SDK_LOCK.release()
+        finally:
+            self._hand_lock.release()
         return flatten_joint_positions(
             positions,
             f"{self.config.side}_actual_positions",
@@ -146,6 +173,13 @@ class HandCommandWorker:
             if self._last_target_positions is None:
                 return None
             return list(self._last_target_positions)
+
+    def has_pending_or_active_command(self) -> bool:
+        with self._condition:
+            pending = self._pending is not None
+        with self._active_lock:
+            active = self._command_active
+        return pending or active
 
     def stop(self) -> bool:
         with self._condition:
@@ -173,6 +207,7 @@ class HandCommandWorker:
                 self._pending = None
 
             try:
+                self._set_command_active(True)
                 completed = self._write_trajectory(pose_name, pose)
                 if completed:
                     self._node.get_logger().info(
@@ -184,6 +219,8 @@ class HandCommandWorker:
                     f"[{self.config.side}] Failed to write Wuji pose "
                     f"'{pose_name}': {exc!r}"
                 )
+            finally:
+                self._set_command_active(False)
 
     def _write_trajectory(self, pose_name: str, pose: list[list[float]]) -> bool:
         target_positions = flatten_joint_positions(
@@ -245,6 +282,10 @@ class HandCommandWorker:
         with self._last_target_lock:
             self._last_target_positions = [float(value) for value in positions]
 
+    def _set_command_active(self, active: bool) -> None:
+        with self._active_lock:
+            self._command_active = active
+
 
 class DryRunHand:
     def disable_thread_safe_check(self) -> None:
@@ -258,6 +299,51 @@ class DryRunHand:
         positions: list[list[float]],
     ) -> None:
         del positions
+
+    def read_joint_actual_position(self, timeout_sec: float) -> list[list[float]]:
+        del timeout_sec
+        return positions_as_5x4([0.0] * 20, "dry_run_actual_positions")
+
+
+class Ros2CommandHand:
+    """Adapter that sends Wuji commands through the official ROS2 driver."""
+
+    def __init__(self, node: Node, side: str, command_topic: str) -> None:
+        self._node = node
+        self._side = side
+        self._publisher = node.create_publisher(
+            JointState,
+            command_topic,
+            qos_profile_sensor_data,
+        )
+
+    def disable_thread_safe_check(self) -> None:
+        pass
+
+    def write_joint_enabled(self, enabled: bool) -> None:
+        del enabled
+
+    def write_joint_target_position_unchecked(
+        self,
+        positions: list[list[float]],
+    ) -> None:
+        msg = JointState()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        # The official driver accepts a position-only 20D array in its native
+        # joint order. Do not send local debug names here; non-empty names make
+        # the driver switch to name matching.
+        msg.position = flatten_joint_positions(
+            positions,
+            f"{self._side}_ros2_command_positions",
+        )
+        self._publisher.publish(msg)
+
+    def read_joint_actual_position(self, timeout_sec: float) -> list[list[float]]:
+        del timeout_sec
+        raise RuntimeError(
+            "ROS2 command backend does not read actual positions directly; "
+            "subscribe to the official driver joint_states topic instead."
+        )
 
 
 class WujiTriggerHandNode(Node):
@@ -277,6 +363,7 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("shutdown_release_hold_sec", 0.5)
         self.declare_parameter("disable_on_shutdown", True)
         self.declare_parameter("dry_run", False)
+        self.declare_parameter("control_backend", "ros2")
         self.declare_parameter("trajectory_duration_sec", 0.5)
         self.declare_parameter("trajectory_rate_hz", 50.0)
         self.declare_parameter("publish_joint_states", True)
@@ -287,10 +374,15 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("control_mode", CONTROL_MODE_TRIGGER)
         self.declare_parameter("command_server_host", "127.0.0.1")
         self.declare_parameter("command_server_port", 8765)
+        self.declare_parameter("publish_actual_joint_states", True)
+        self.declare_parameter("actual_joint_state_rate_hz", 5.0)
+        self.declare_parameter("actual_joint_state_read_timeout_sec", 0.005)
+        self.declare_parameter("skip_actual_read_while_commanding", True)
 
         self.declare_parameter("left_enabled", False)
         self.declare_parameter("left_pose_calibrated", False)
         self.declare_parameter("left_serial", "")
+        self.declare_parameter("left_command_topic", "/hand_left/joint_commands")
         self.declare_parameter("left_trigger_value_name", "leftTrig")
         self.declare_parameter("left_trigger_button_name", "LTr")
         self.declare_parameter("left_released_pose", [0.0] * 20)
@@ -299,6 +391,7 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("right_enabled", True)
         self.declare_parameter("right_pose_calibrated", True)
         self.declare_parameter("right_serial", "")
+        self.declare_parameter("right_command_topic", "/hand_right/joint_commands")
         self.declare_parameter("right_trigger_value_name", "rightTrig")
         self.declare_parameter("right_trigger_button_name", "RTr")
         self.declare_parameter("right_released_pose", RIGHT_RELEASED)
@@ -336,6 +429,11 @@ class WujiTriggerHandNode(Node):
             self.get_parameter("disable_on_shutdown").value
         )
         self.dry_run = bool(self.get_parameter("dry_run").value)
+        self.control_backend = str(
+            self.get_parameter("control_backend").value
+        ).strip().lower()
+        if self.control_backend not in ("ros2", "sdk"):
+            raise ValueError("control_backend must be 'ros2' or 'sdk'")
         self.trajectory_duration_sec = max(
             float(self.get_parameter("trajectory_duration_sec").value),
             0.0,
@@ -379,6 +477,26 @@ class WujiTriggerHandNode(Node):
         self.command_server_port = int(
             self.get_parameter("command_server_port").value
         )
+        self.publish_actual_joint_states = bool(
+            self.get_parameter("publish_actual_joint_states").value
+        )
+        if self.control_backend == "ros2" and self.publish_actual_joint_states:
+            self.get_logger().warn(
+                "publish_actual_joint_states is ignored with control_backend=ros2; "
+                "record actual positions from the official driver joint_states topic."
+            )
+            self.publish_actual_joint_states = False
+        self.actual_joint_state_rate_hz = max(
+            float(self.get_parameter("actual_joint_state_rate_hz").value),
+            1.0,
+        )
+        self.actual_joint_state_read_timeout_sec = max(
+            float(self.get_parameter("actual_joint_state_read_timeout_sec").value),
+            0.0,
+        )
+        self.skip_actual_read_while_commanding = bool(
+            self.get_parameter("skip_actual_read_while_commanding").value
+        )
         self._validate_thresholds()
 
         configs = [
@@ -397,10 +515,13 @@ class WujiTriggerHandNode(Node):
         self.trigger_pressed: dict[str, bool] = {}
         self.hand_closed: dict[str, bool] = {}
         self.joint_state_publishers: dict[str, Any] = {}
+        self.actual_joint_state_publishers: dict[str, Any] = {}
         self.last_buttons_time: float | None = None
         self.timeout_release_active = False
         self._destroying = False
         self.command_server: WujiCommandServer | None = None
+        self._actual_joint_state_stop_event = threading.Event()
+        self._actual_joint_state_thread: threading.Thread | None = None
 
         try:
             for config in configs:
@@ -432,6 +553,14 @@ class WujiTriggerHandNode(Node):
                     )
                     self.joint_state_publishers[config.side] = (
                         self.create_publisher(JointState, topic, 10)
+                    )
+                if self.publish_actual_joint_states:
+                    actual_topic = (
+                        f"{self.joint_state_topic_prefix}/"
+                        f"{config.side}/actual_joint_states"
+                    )
+                    self.actual_joint_state_publishers[config.side] = (
+                        self.create_publisher(JointState, actual_topic, 10)
                     )
         except Exception:
             self._cleanup_hands(release=True, disable=True)
@@ -468,21 +597,39 @@ class WujiTriggerHandNode(Node):
                 1.0 / self.joint_state_rate_hz,
                 self.publish_joint_states_callback,
             )
+        if self.publish_actual_joint_states:
+            self._actual_joint_state_thread = threading.Thread(
+                target=self._actual_joint_state_loop,
+                name="wuji_actual_joint_state_reader",
+                daemon=True,
+            )
+            self._actual_joint_state_thread.start()
         enabled_sides = ", ".join(sorted(self.workers))
         state_topics = {
             side: f"{self.joint_state_topic_prefix}/{side}/joint_states"
             for side in sorted(self.joint_state_publishers)
         }
+        actual_state_topics = {
+            side: f"{self.joint_state_topic_prefix}/{side}/actual_joint_states"
+            for side in sorted(self.actual_joint_state_publishers)
+        }
         self.get_logger().info(
             "Wuji trigger hand node ready. "
             f"hands={enabled_sides}, buttons={self.buttons_topic}, "
+            f"control_backend={self.control_backend}, "
             f"press_threshold={self.press_threshold:.2f}, "
             f"release_threshold={self.release_threshold:.2f}, "
             f"timeout={self.buttons_timeout:.2f}s, dry_run={self.dry_run}, "
             f"trajectory_duration={self.trajectory_duration_sec:.3f}s, "
             f"trajectory_rate={self.trajectory_rate_hz:.1f}Hz, "
-            f"joint_state_topics={state_topics}, control_mode={self.control_mode}, "
-            f"command_server={None if self.command_server is None else self.command_server.url}"
+            f"joint_state_topics={state_topics}, "
+            f"actual_joint_state_topics={actual_state_topics}, "
+            f"actual_joint_state_rate={self.actual_joint_state_rate_hz:.1f}Hz, "
+            f"skip_actual_read_while_commanding="
+            f"{self.skip_actual_read_while_commanding}, "
+            f"control_mode={self.control_mode}, "
+            f"command_server="
+            f"{None if self.command_server is None else self.command_server.url}"
         )
 
     def _write_service_joint_targets(
@@ -512,6 +659,9 @@ class WujiTriggerHandNode(Node):
         return HandConfig(
             side=side,
             serial=str(self.get_parameter(f"{side}_serial").value).strip(),
+            command_topic=str(
+                self.get_parameter(f"{side}_command_topic").value
+            ).strip(),
             trigger_value_name=str(
                 self.get_parameter(f"{side}_trigger_value_name").value
             ).strip(),
@@ -637,6 +787,13 @@ class WujiTriggerHandNode(Node):
             )
             return DryRunHand()
 
+        if self.control_backend == "ros2":
+            self.get_logger().info(
+                f"[{config.side}] Using official Wuji ROS2 driver command topic: "
+                f"{config.command_topic}"
+            )
+            return Ros2CommandHand(self, config.side, config.command_topic)
+
         try:
             import wujihandpy
         except ImportError as exc:
@@ -753,6 +910,47 @@ class WujiTriggerHandNode(Node):
             msg.position = positions
             publisher.publish(msg)
 
+    def _actual_joint_state_loop(self) -> None:
+        period = 1.0 / self.actual_joint_state_rate_hz
+        while not self._actual_joint_state_stop_event.is_set():
+            loop_start = time.monotonic()
+            stamp = self.get_clock().now().to_msg()
+            if (
+                self.skip_actual_read_while_commanding
+                and any(
+                    worker.has_pending_or_active_command()
+                    for worker in self.workers.values()
+                )
+            ):
+                self._actual_joint_state_stop_event.wait(period)
+                continue
+            for side, worker in list(self.workers.items()):
+                publisher = self.actual_joint_state_publishers.get(side)
+                if publisher is None:
+                    continue
+                try:
+                    positions = worker.try_read_actual_positions(
+                        self.actual_joint_state_read_timeout_sec
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.get_logger().warn(
+                        f"[{side}] Failed to read Wuji actual joint positions: "
+                        f"{exc!r}",
+                        throttle_duration_sec=2.0,
+                    )
+                    continue
+                if positions is None:
+                    continue
+
+                msg = JointState()
+                msg.header.stamp = stamp
+                msg.name = self._joint_names(side)
+                msg.position = positions
+                publisher.publish(msg)
+
+            elapsed = time.monotonic() - loop_start
+            self._actual_joint_state_stop_event.wait(max(0.0, period - elapsed))
+
     def destroy_node(self) -> bool:
         if self._destroying:
             return True
@@ -760,6 +958,14 @@ class WujiTriggerHandNode(Node):
         if self.command_server is not None:
             self.command_server.stop()
             self.command_server = None
+        self._actual_joint_state_stop_event.set()
+        if self._actual_joint_state_thread is not None:
+            self._actual_joint_state_thread.join(timeout=2.0)
+            if self._actual_joint_state_thread.is_alive():
+                self.get_logger().warn(
+                    "Wuji actual joint state reader thread did not stop "
+                    "within 2 seconds."
+                )
         self._cleanup_hands(
             release=self.release_on_shutdown,
             disable=self.disable_on_shutdown,
@@ -814,7 +1020,11 @@ class WujiTriggerHandNode(Node):
 
     @staticmethod
     def _joint_names(side: str) -> list[str]:
-        return [f"{side}_wuji_joint_{index:02d}" for index in range(20)]
+        return joint_names(side)
+
+
+def joint_names(side: str) -> list[str]:
+    return [f"{side}_wuji_joint_{index:02d}" for index in range(20)]
 
 
 def main(args: list[str] | None = None) -> None:
