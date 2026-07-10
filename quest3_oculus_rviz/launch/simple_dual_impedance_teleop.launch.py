@@ -116,12 +116,16 @@ def generate_launch_description():
     left_teleop_cpu = LaunchConfiguration("left_teleop_cpu")
     right_teleop_cpu = LaunchConfiguration("right_teleop_cpu")
     start_wuji_trigger_hand = LaunchConfiguration("start_wuji_trigger_hand")
+    start_wujihand_driver = LaunchConfiguration("start_wujihand_driver")
     wuji_config_file = LaunchConfiguration("wuji_config_file")
     left_wuji_enabled = LaunchConfiguration("left_wuji_enabled")
     right_wuji_enabled = LaunchConfiguration("right_wuji_enabled")
     left_wuji_serial = LaunchConfiguration("left_wuji_serial")
     right_wuji_serial = LaunchConfiguration("right_wuji_serial")
     wuji_dry_run = LaunchConfiguration("wuji_dry_run")
+    wujihand_state_rate = LaunchConfiguration("wujihand_state_rate")
+    left_wujihand_driver_cpu = LaunchConfiguration("left_wujihand_driver_cpu")
+    right_wujihand_driver_cpu = LaunchConfiguration("right_wujihand_driver_cpu")
     wuji_cpu = LaunchConfiguration("wuji_cpu")
     start_data_recorder = LaunchConfiguration("start_data_recorder")
     data_recorder_config_file = LaunchConfiguration("data_recorder_config_file")
@@ -179,12 +183,16 @@ def generate_launch_description():
             DeclareLaunchArgument("left_teleop_cpu", default_value=""),
             DeclareLaunchArgument("right_teleop_cpu", default_value=""),
             DeclareLaunchArgument("start_wuji_trigger_hand", default_value="false"),
+            DeclareLaunchArgument("start_wujihand_driver", default_value="false"),
             DeclareLaunchArgument("wuji_config_file", default_value=default_wuji_config),
             DeclareLaunchArgument("left_wuji_enabled", default_value="false"),
             DeclareLaunchArgument("right_wuji_enabled", default_value="true"),
             DeclareLaunchArgument("left_wuji_serial", default_value="3566377E3533"),
             DeclareLaunchArgument("right_wuji_serial", default_value="3671354F3333"),
             DeclareLaunchArgument("wuji_dry_run", default_value="false"),
+            DeclareLaunchArgument("wujihand_state_rate", default_value="1000.0"),
+            DeclareLaunchArgument("left_wujihand_driver_cpu", default_value=""),
+            DeclareLaunchArgument("right_wujihand_driver_cpu", default_value=""),
             DeclareLaunchArgument("wuji_cpu", default_value=""),
             DeclareLaunchArgument("start_data_recorder", default_value="false"),
             DeclareLaunchArgument(
@@ -263,6 +271,70 @@ def generate_launch_description():
                 config_file=config_file,
                 condition=start_right_teleop,
                 cpu=right_teleop_cpu,
+            ),
+            Node(
+                package="wujihand_driver",
+                executable="wujihand_driver_node",
+                name="wujihand_driver",
+                namespace="hand_left",
+                output="screen",
+                emulate_tty=True,
+                prefix=_taskset_prefix(left_wujihand_driver_cpu),
+                parameters=[
+                    {
+                        "serial_number": ParameterValue(
+                            left_wuji_serial,
+                            value_type=str,
+                        ),
+                        "publish_rate": ParameterValue(
+                            wujihand_state_rate,
+                            value_type=float,
+                        ),
+                    }
+                ],
+                condition=IfCondition(
+                    PythonExpression(
+                        [
+                            "'",
+                            start_wujihand_driver,
+                            "' == 'true' and '",
+                            left_wuji_enabled,
+                            "' == 'true'",
+                        ]
+                    )
+                ),
+            ),
+            Node(
+                package="wujihand_driver",
+                executable="wujihand_driver_node",
+                name="wujihand_driver",
+                namespace="hand_right",
+                output="screen",
+                emulate_tty=True,
+                prefix=_taskset_prefix(right_wujihand_driver_cpu),
+                parameters=[
+                    {
+                        "serial_number": ParameterValue(
+                            right_wuji_serial,
+                            value_type=str,
+                        ),
+                        "publish_rate": ParameterValue(
+                            wujihand_state_rate,
+                            value_type=float,
+                        ),
+                    }
+                ],
+                condition=IfCondition(
+                    PythonExpression(
+                        [
+                            "'",
+                            start_wujihand_driver,
+                            "' == 'true' and '",
+                            right_wuji_enabled,
+                            "' == 'true'",
+                        ]
+                    )
+                ),
             ),
             Node(
                 package="quest3_oculus_rviz",

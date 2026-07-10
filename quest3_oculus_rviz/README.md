@@ -589,6 +589,9 @@ episode_N.hdf5
     ├── hand_joint_positions
     │   ├── left   (T,20) float32  # Wuji 左手 20 维目标关节位置
     │   └── right  (T,20) float32  # Wuji 右手 20 维目标关节位置
+    ├── hand_actual_joint_positions
+    │   ├── left   (T,20) float32  # Wuji 左手 20 维当前/实测关节位置
+    │   └── right  (T,20) float32  # Wuji 右手 20 维当前/实测关节位置
     └── images
         └── front  (T, H, W, 3) uint8   # BGR8
 ```
@@ -596,7 +599,10 @@ episode_N.hdf5
 `cmds` 来自摇操节点发出的 `equilibrium_pose`，`cartesian_poses` 来自
 `franka_robot_state_broadcaster/current_pose`，`gripper_width` 来自
 `franka_gripper/joint_states`，`hand_joint_positions` 来自
-`/wuji/left/joint_states` 和 `/wuji/right/joint_states`，`images/<cam>` 通过 OpenCV V4L2 直接抓取，
+`/hand_left/joint_commands` 和 `/hand_right/joint_commands`，记录的是下发目标；
+`hand_actual_joint_positions` 来自 `/hand_left/joint_states` 和
+`/hand_right/joint_states`，记录的是官方 wujihandros2 driver 读回的当前状态；
+`images/<cam>` 通过 OpenCV V4L2 直接抓取，
 不经 ROS。相机为 USB 鱼眼相机，按 `usb_path`（或 `serial`）+ `stream_index`
 匹配 V4L2 设备，默认分辨率 1280x720 @30 FPS、`MJPG`，可在
 `config/data_recorder.yaml` 修改。`camera_names` 列出要录的相机，每个相机用
@@ -672,6 +678,9 @@ episode_N.hdf5
     ├── hand_joint_positions
     │   ├── left   (T,20) float32  # Wuji 左手 20 维目标关节位置
     │   └── right  (T,20) float32  # Wuji 右手 20 维目标关节位置
+    ├── hand_actual_joint_positions
+    │   ├── left   (T,20) float32  # Wuji 左手 20 维当前/实测关节位置
+    │   └── right  (T,20) float32  # Wuji 右手 20 维当前/实测关节位置
     └── images
         └── front  (T, H, W, 3) uint8   # BGR8
 ```
@@ -679,7 +688,10 @@ episode_N.hdf5
 `cmds` 来自摇操节点发出的 `equilibrium_pose`，`cartesian_poses` 来自
 `franka_robot_state_broadcaster/current_pose`，`gripper_width` 来自
 `franka_gripper/joint_states`，`hand_joint_positions` 来自
-`/wuji/left/joint_states` 和 `/wuji/right/joint_states`，`images/<cam>` 通过 OpenCV V4L2 直接抓取，
+`/hand_left/joint_commands` 和 `/hand_right/joint_commands`，记录的是下发目标；
+`hand_actual_joint_positions` 来自 `/hand_left/joint_states` 和
+`/hand_right/joint_states`，记录的是官方 wujihandros2 driver 读回的当前状态；
+`images/<cam>` 通过 OpenCV V4L2 直接抓取，
 不经 ROS。相机为 USB 鱼眼相机，按 `usb_path`（或 `serial`）+ `stream_index`
 匹配 V4L2 设备，默认分辨率 1280x720 @30 FPS、`MJPG`，可在
 `config/data_recorder.yaml` 修改。`camera_names` 列出要录的相机，每个相机用

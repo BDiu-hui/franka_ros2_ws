@@ -30,10 +30,11 @@ quest3_data_recorder:
     image_storage: jpeg
     warmup_frames: 10
 
-    # Wuji dexterous hand recording. The Wuji control node publishes each hand
-    # as sensor_msgs/JointState with 20 positions; recorder writes them to
-    # observations/hand_joint_positions/<arm>.
+    # Wuji dexterous hand recording. Scheme B uses the official wujihandros2
+    # driver: command targets come from /hand_*/joint_commands, measured/current
+    # positions come from /hand_*/joint_states.
     record_hand_joint_positions: true
+    record_hand_actual_joint_positions: true
     hand_joint_count: 20
     # Fish-eye (V4L2/UVC) cameras matched by usb_path or serial + stream_index.
     # These A031-PC2.1-ZC cameras all report the same USB serial (SN0001), so
@@ -65,12 +66,14 @@ quest3_data_recorder:
       cmd_topic: /left/cartesian_impedance_controller/equilibrium_pose
       current_pose_topic: /left/franka_robot_state_broadcaster/current_pose
       gripper_joint_states_topic: /left/franka_gripper/joint_states
-      hand_joint_states_topic: /wuji/left/joint_states
+      hand_command_topic: /hand_left/joint_commands
+      hand_actual_joint_states_topic: /hand_left/joint_states
       wrench_topic: /left/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
 
     right:
       cmd_topic: /right/cartesian_impedance_controller/equilibrium_pose
       current_pose_topic: /right/franka_robot_state_broadcaster/current_pose
       gripper_joint_states_topic: /right/franka_gripper/joint_states
-      hand_joint_states_topic: /wuji/right/joint_states
+      hand_command_topic: /hand_right/joint_commands
+      hand_actual_joint_states_topic: /hand_right/joint_states
       wrench_topic: /right/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
