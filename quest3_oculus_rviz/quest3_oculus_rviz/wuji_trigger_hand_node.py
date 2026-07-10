@@ -323,6 +323,9 @@ class Ros2CommandHand:
     def write_joint_enabled(self, enabled: bool) -> None:
         del enabled
 
+    def has_command_subscriber(self) -> bool:
+        return self._publisher.get_subscription_count() > 0
+
     def write_joint_target_position_unchecked(
         self,
         positions: list[list[float]],
@@ -585,7 +588,7 @@ class WujiTriggerHandNode(Node):
                     self.command_server_host,
                     self.command_server_port,
                     self._write_service_joint_targets,
-                    lambda: tuple(self.workers),
+                    self._service_ready_hands,
                 )
                 self.command_server.start()
             except Exception:
@@ -640,11 +643,28 @@ class WujiTriggerHandNode(Node):
         worker = self.workers.get(side)
         if worker is None:
             raise KeyError(f"Wuji hand {side!r} is not enabled")
+        if (
+            isinstance(worker.hand, Ros2CommandHand)
+            and not worker.hand.has_command_subscriber()
+        ):
+            raise RuntimeError(f"Wuji hand {side!r} driver is not subscribed")
         pose = positions_as_5x4(
             flatten_joint_positions(positions, f"{side}_service_joint_targets"),
             f"{side}_service_joint_targets",
         )
         worker.write_pose_sync(pose)
+
+    def _service_ready_hands(self) -> tuple[str, ...]:
+        ready = []
+        for side, worker in self.workers.items():
+            hand = worker.hand
+            if (
+                isinstance(hand, Ros2CommandHand)
+                and not hand.has_command_subscriber()
+            ):
+                continue
+            ready.append(side)
+        return tuple(ready)
 
     def _load_hand_config(self, side: str) -> HandConfig | None:
         if not bool(self.get_parameter(f"{side}_enabled").value):

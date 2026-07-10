@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.request import Request, urlopen
 
+import pytest
 import rclpy
 
-from quest3_oculus_rviz.wuji_trigger_hand_node import WujiTriggerHandNode
+from quest3_oculus_rviz.wuji_trigger_hand_node import (
+    Ros2CommandHand,
+    WujiTriggerHandNode,
+)
 
 
 def _get_json(url: str) -> dict:
@@ -95,3 +100,34 @@ def test_trigger_mode_keeps_quest_subscription_and_watchdog() -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+
+def test_ros2_hand_readiness_requires_driver_subscription() -> None:
+    hand = object.__new__(Ros2CommandHand)
+    hand._publisher = type(
+        "Publisher",
+        (),
+        {"get_subscription_count": lambda self: 0},
+    )()
+    assert hand.has_command_subscriber() is False
+
+    hand._publisher = type(
+        "Publisher",
+        (),
+        {"get_subscription_count": lambda self: 1},
+    )()
+    assert hand.has_command_subscriber() is True
+
+
+def test_service_command_rejects_unsubscribed_ros2_driver() -> None:
+    hand = object.__new__(Ros2CommandHand)
+    hand._publisher = type(
+        "Publisher",
+        (),
+        {"get_subscription_count": lambda self: 0},
+    )()
+    node = object.__new__(WujiTriggerHandNode)
+    node.workers = {"left": SimpleNamespace(hand=hand)}
+
+    with pytest.raises(RuntimeError, match="driver is not subscribed"):
+        node._write_service_joint_targets("left", [0.0] * 20)

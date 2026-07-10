@@ -23,6 +23,7 @@ delta，把 delta 映射到机器人 TCP 目标位姿，然后发布到
 | --- | --- |
 | `simple_impedance_teleop.launch.py` | 单臂阻抗摇操，一起启动 Franka HTTP/阻抗控制栈和 Quest teleop |
 | `simple_dual_impedance_teleop.launch.py` | 双臂阻抗摇操，可一条命令启动，也可把 Franka 控制栈和 Quest teleop 分进程启动 |
+| `simple_dual_policy.launch.py` | 双臂策略推理，启动 Franka、Wuji driver 和 HTTP 策略桥，不启动 Quest/摇操/采集 |
 | `rviz.launch.py` | Quest pose/RViz 预览和旧链路调试 |
 
 ## 构建
@@ -144,6 +145,18 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 | `all_in_one` | 一条命令启动左右 Franka、Quest reader、左右摇操节点和 Wuji | `simple_dual_all.launch.py` |
 | `franka_stack` | 只启动左右 Franka 控制栈 | `simple_dual_franka_stack.launch.py` |
 | `quest_teleop` | 只启动 Quest reader、左右摇操节点和 Wuji | `simple_dual_quest_teleop.launch.py` |
+| `policy_inference` | 启动左右 Franka、Wuji driver 和 service 模式策略桥，不启动遥操作/采集 | `simple_dual_policy.launch.py` |
+
+扩散策略推理使用专用入口，避免 Quest 或摇操节点覆盖策略目标:
+
+```bash
+cd ~/franka_ros2_ws
+source setup_env.bash
+ros2 launch quest3_oculus_rviz simple_dual_policy.launch.py
+```
+
+该 profile 的 Franka HTTP 端口固定为左臂 `5000`、右臂 `5001`，Wuji HTTP
+策略桥监听 `127.0.0.1:8765`。其他 profile 仍默认使用 Wuji `trigger` 模式。
 
 一条命令启动全部节点:
 
