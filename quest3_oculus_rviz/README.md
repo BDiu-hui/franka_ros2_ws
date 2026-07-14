@@ -23,6 +23,7 @@ delta，把 delta 映射到机器人 TCP 目标位姿，然后发布到
 | --- | --- |
 | `simple_impedance_teleop.launch.py` | 单臂阻抗摇操，一起启动 Franka HTTP/阻抗控制栈和 Quest teleop |
 | `simple_dual_impedance_teleop.launch.py` | 双臂阻抗摇操，可一条命令启动，也可把 Franka 控制栈和 Quest teleop 分进程启动 |
+| `simple_dual_policy.launch.py` | 双臂策略推理，启动 Franka、Wuji driver 和 HTTP 策略桥，不启动 Quest/摇操/采集 |
 | `rviz.launch.py` | Quest pose/RViz 预览和旧链路调试 |
 
 ## 构建
@@ -144,6 +145,18 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 | `all_in_one` | 一条命令启动左右 Franka、Quest reader、左右摇操节点和 Wuji | `simple_dual_all.launch.py` |
 | `franka_stack` | 只启动左右 Franka 控制栈 | `simple_dual_franka_stack.launch.py` |
 | `quest_teleop` | 只启动 Quest reader、左右摇操节点和 Wuji | `simple_dual_quest_teleop.launch.py` |
+| `policy_inference` | 启动左右 Franka、Wuji driver 和 service 模式策略桥，不启动遥操作/采集 | `simple_dual_policy.launch.py` |
+
+扩散策略推理使用专用入口，避免 Quest 或摇操节点覆盖策略目标:
+
+```bash
+cd ~/franka_ros2_ws
+source setup_env.bash
+ros2 launch quest3_oculus_rviz simple_dual_policy.launch.py
+```
+
+该 profile 的 Franka HTTP 端口固定为左臂 `5000`、右臂 `5001`，Wuji HTTP
+策略桥监听 `127.0.0.1:8765`。其他 profile 仍默认使用 Wuji `trigger` 模式。
 
 一条命令启动全部节点:
 
@@ -246,6 +259,29 @@ ros2 run quest3_oculus_rviz wuji_trigger_hand_node \
   --ros-args \
   --params-file /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml
 ```
+
+扩散策略推理使用 `service` 模式。该模式不订阅 Quest trigger，也不运行按键超时释放逻辑，
+避免遥操作命令覆盖策略输出；USB 连接、关节使能和退出释放仍由本节点统一管理。后加载的
+`wuji_policy_bridge.yaml` 只覆盖控制模式:
+
+```bash
+source setup_env.bash
+ros2 run quest3_oculus_rviz wuji_trigger_hand_node \
+  --ros-args \
+  --params-file /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml \
+  --params-file /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_policy_bridge.yaml \
+  -p left_enabled:=true \
+  -p right_enabled:=true
+```
+
+服务只允许绑定 loopback，默认监听 `http://127.0.0.1:8765`。启动 EasyDP 前可检查:
+
+```bash
+curl http://127.0.0.1:8765/health
+```
+
+健康响应必须同时包含 `left` 和 `right`。关节目标接口是同步写入：SDK 写入失败会直接返回
+HTTP 错误，调用方不会把“已排队”误认为硬件已经接受。
 
 退出节点时默认先下发 `released`，随后关闭灵巧手关节使能。
 

@@ -59,6 +59,46 @@ franka_stack:
   # 右臂 reflex watchdog 绑定 CPU，负责监听错误并按配置恢复。
   right_watchdog_cpu: 12
 
+# 扩散策略推理专用: 启动左右 Franka、官方 Wuji driver 和 HTTP 策略桥，
+# 不启动 Quest、摇操或数据采集，避免其他节点覆盖策略目标。
+policy_inference:
+  left_robot_ip: 172.16.0.2
+  right_robot_ip: 172.16.0.3
+  robot_type: fr3
+  load_gripper: false
+  start_rviz: false
+  base_frame: base
+  start_left_arm: true
+  start_right_arm: true
+  start_quest_reader: false
+  start_left_teleop: false
+  start_right_teleop: false
+  start_data_recorder: false
+  start_wuji_trigger_hand: true
+  start_wujihand_driver: true
+  wuji_control_mode: service
+  left_wuji_enabled: true
+  right_wuji_enabled: true
+  left_wuji_serial: 3566377E3533
+  right_wuji_serial: 3671354F3333
+  wuji_dry_run: false
+  wujihand_state_rate: 1000.0
+  auto_start_impedance: true
+  auto_recover_after_reflex: true
+  left_server_port: 5000
+  right_server_port: 5001
+  left_ros2_control_cpu: 2
+  left_franka_aux_cpu: 4
+  left_http_server_cpu: 6
+  left_watchdog_cpu: 6
+  right_ros2_control_cpu: 8
+  right_franka_aux_cpu: 10
+  right_http_server_cpu: 12
+  right_watchdog_cpu: 12
+  wuji_cpu: 20
+  left_wujihand_driver_cpu: 21
+  right_wujihand_driver_cpu: 23
+
 # 只启动 Quest reader、左右摇操节点和 Wuji，不重复启动 Franka 控制栈。
 # 使用这个 profile 前，需要先用 franka_stack 把左右 Franka 控制栈启动起来。
 quest_teleop:

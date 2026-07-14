@@ -14,6 +14,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
+from quest3_oculus_rviz.wuji_command_server import WujiCommandServer
+
 
 RIGHT_RELEASED = [
     1.001, -0.083, -0.059, -0.188,
@@ -34,6 +36,9 @@ RIGHT_CLOSE_TYPE3 = [
 WUJI_USB_VENDOR_ID = "0483"
 WUJI_USB_PRODUCT_ID = "2000"
 AUTO_SERIAL_VALUES = {"", "auto"}
+CONTROL_MODE_TRIGGER = "trigger"
+CONTROL_MODE_SERVICE = "service"
+CONTROL_MODES = {CONTROL_MODE_TRIGGER, CONTROL_MODE_SERVICE}
 WUJI_SDK_LOCK = threading.Lock()
 
 
@@ -318,6 +323,9 @@ class Ros2CommandHand:
     def write_joint_enabled(self, enabled: bool) -> None:
         del enabled
 
+    def has_command_subscriber(self) -> bool:
+        return self._publisher.get_subscription_count() > 0
+
     def write_joint_target_position_unchecked(
         self,
         positions: list[list[float]],
@@ -366,6 +374,9 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("joint_state_topic_prefix", "/wuji")
         self.declare_parameter("joint_state_rate_hz", 30.0)
         self.declare_parameter("joint_state_read_timeout_sec", 0.03)
+        self.declare_parameter("control_mode", CONTROL_MODE_TRIGGER)
+        self.declare_parameter("command_server_host", "127.0.0.1")
+        self.declare_parameter("command_server_port", 8765)
         self.declare_parameter("publish_actual_joint_states", True)
         self.declare_parameter("actual_joint_state_rate_hz", 5.0)
         self.declare_parameter("actual_joint_state_read_timeout_sec", 0.005)
@@ -455,6 +466,20 @@ class WujiTriggerHandNode(Node):
             float(self.get_parameter("joint_state_read_timeout_sec").value),
             0.0,
         )
+        self.control_mode = str(
+            self.get_parameter("control_mode").value
+        ).strip().lower()
+        if self.control_mode not in CONTROL_MODES:
+            raise ValueError(
+                f"control_mode must be one of {sorted(CONTROL_MODES)}, "
+                f"got {self.control_mode!r}"
+            )
+        self.command_server_host = str(
+            self.get_parameter("command_server_host").value
+        ).strip()
+        self.command_server_port = int(
+            self.get_parameter("command_server_port").value
+        )
         self.publish_actual_joint_states = bool(
             self.get_parameter("publish_actual_joint_states").value
         )
@@ -497,6 +522,7 @@ class WujiTriggerHandNode(Node):
         self.last_buttons_time: float | None = None
         self.timeout_release_active = False
         self._destroying = False
+        self.command_server: WujiCommandServer | None = None
         self._actual_joint_state_stop_event = threading.Event()
         self._actual_joint_state_thread: threading.Thread | None = None
 
@@ -516,10 +542,13 @@ class WujiTriggerHandNode(Node):
                 self.hand_closed[config.side] = False
                 worker.write_enabled(True)
                 if self.release_on_startup:
-                    worker.request_pose(
-                        "released_startup",
-                        config.released_pose,
-                    )
+                    if self.control_mode == CONTROL_MODE_SERVICE:
+                        worker.write_pose_sync(config.released_pose)
+                    else:
+                        worker.request_pose(
+                            "released_startup",
+                            config.released_pose,
+                        )
                 if self.publish_joint_states:
                     topic = (
                         f"{self.joint_state_topic_prefix}/"
@@ -540,16 +569,31 @@ class WujiTriggerHandNode(Node):
             self._cleanup_hands(release=True, disable=True)
             raise
 
-        self.buttons_sub = self.create_subscription(
-            String,
-            self.buttons_topic,
-            self.buttons_callback,
-            10,
-        )
-        self.watchdog_timer = self.create_timer(
-            1.0 / watchdog_rate,
-            self.watchdog_callback,
-        )
+        self.buttons_sub = None
+        self.watchdog_timer = None
+        if self.control_mode == CONTROL_MODE_TRIGGER:
+            self.buttons_sub = self.create_subscription(
+                String,
+                self.buttons_topic,
+                self.buttons_callback,
+                10,
+            )
+            self.watchdog_timer = self.create_timer(
+                1.0 / watchdog_rate,
+                self.watchdog_callback,
+            )
+        else:
+            try:
+                self.command_server = WujiCommandServer(
+                    self.command_server_host,
+                    self.command_server_port,
+                    self._write_service_joint_targets,
+                    self._service_ready_hands,
+                )
+                self.command_server.start()
+            except Exception:
+                self._cleanup_hands(release=True, disable=True)
+                raise
         self.joint_state_timer = None
         if self.publish_joint_states:
             self.joint_state_timer = self.create_timer(
@@ -585,8 +629,42 @@ class WujiTriggerHandNode(Node):
             f"actual_joint_state_topics={actual_state_topics}, "
             f"actual_joint_state_rate={self.actual_joint_state_rate_hz:.1f}Hz, "
             f"skip_actual_read_while_commanding="
-            f"{self.skip_actual_read_while_commanding}"
+            f"{self.skip_actual_read_while_commanding}, "
+            f"control_mode={self.control_mode}, "
+            f"command_server="
+            f"{None if self.command_server is None else self.command_server.url}"
         )
+
+    def _write_service_joint_targets(
+        self,
+        side: str,
+        positions: list[float],
+    ) -> None:
+        worker = self.workers.get(side)
+        if worker is None:
+            raise KeyError(f"Wuji hand {side!r} is not enabled")
+        if (
+            isinstance(worker.hand, Ros2CommandHand)
+            and not worker.hand.has_command_subscriber()
+        ):
+            raise RuntimeError(f"Wuji hand {side!r} driver is not subscribed")
+        pose = positions_as_5x4(
+            flatten_joint_positions(positions, f"{side}_service_joint_targets"),
+            f"{side}_service_joint_targets",
+        )
+        worker.write_pose_sync(pose)
+
+    def _service_ready_hands(self) -> tuple[str, ...]:
+        ready = []
+        for side, worker in self.workers.items():
+            hand = worker.hand
+            if (
+                isinstance(hand, Ros2CommandHand)
+                and not hand.has_command_subscriber()
+            ):
+                continue
+            ready.append(side)
+        return tuple(ready)
 
     def _load_hand_config(self, side: str) -> HandConfig | None:
         if not bool(self.get_parameter(f"{side}_enabled").value):
@@ -897,6 +975,9 @@ class WujiTriggerHandNode(Node):
         if self._destroying:
             return True
         self._destroying = True
+        if self.command_server is not None:
+            self.command_server.stop()
+            self.command_server = None
         self._actual_joint_state_stop_event.set()
         if self._actual_joint_state_thread is not None:
             self._actual_joint_state_thread.join(timeout=2.0)

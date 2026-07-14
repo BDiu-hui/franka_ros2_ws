@@ -118,6 +118,7 @@ def generate_launch_description():
     start_wuji_trigger_hand = LaunchConfiguration("start_wuji_trigger_hand")
     start_wujihand_driver = LaunchConfiguration("start_wujihand_driver")
     wuji_config_file = LaunchConfiguration("wuji_config_file")
+    wuji_control_mode = LaunchConfiguration("wuji_control_mode")
     left_wuji_enabled = LaunchConfiguration("left_wuji_enabled")
     right_wuji_enabled = LaunchConfiguration("right_wuji_enabled")
     left_wuji_serial = LaunchConfiguration("left_wuji_serial")
@@ -185,6 +186,7 @@ def generate_launch_description():
             DeclareLaunchArgument("start_wuji_trigger_hand", default_value="false"),
             DeclareLaunchArgument("start_wujihand_driver", default_value="false"),
             DeclareLaunchArgument("wuji_config_file", default_value=default_wuji_config),
+            DeclareLaunchArgument("wuji_control_mode", default_value="trigger"),
             DeclareLaunchArgument("left_wuji_enabled", default_value="false"),
             DeclareLaunchArgument("right_wuji_enabled", default_value="true"),
             DeclareLaunchArgument("left_wuji_serial", default_value="3566377E3533"),
@@ -363,6 +365,10 @@ def generate_launch_description():
                         "dry_run": ParameterValue(
                             wuji_dry_run,
                             value_type=bool,
+                        ),
+                        "control_mode": ParameterValue(
+                            wuji_control_mode,
+                            value_type=str,
                         ),
                     },
                 ],

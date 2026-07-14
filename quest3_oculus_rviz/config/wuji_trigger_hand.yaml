@@ -32,6 +32,11 @@ wuji_trigger_hand:
     joint_state_topic_prefix: /wuji
     joint_state_rate_hz: 30.0
     joint_state_read_timeout_sec: 0.03
+    # trigger: Quest trigger toggles own the hands. service: the loopback policy
+    # bridge owns them and trigger/watchdog callbacks are disabled.
+    control_mode: trigger
+    command_server_host: 127.0.0.1
+    command_server_port: 8765
     # Only used by control_backend=sdk. With control_backend=ros2, actual
     # positions come from the official driver /hand_left/right/joint_states.
     publish_actual_joint_states: false
