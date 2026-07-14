@@ -1,0 +1,830 @@
+"""Wuji Hand Zenoh Bridge - exposes wujihandpy via Zenoh for wuji-sdk.
+
+Uses realtime_controller internally for smooth motion control (PDO 1kHz)
+instead of SDO request/response for target_position writes.
+"""
+
+import json
+import time
+import threading
+import logging
+import argparse
+from typing import Optional
+
+import zenoh
+import numpy as np
+
+# ---------------------------------------------------------------------------
+# Timestamp utility
+# ---------------------------------------------------------------------------
+
+def get_timestamp_us() -> int:
+    """Return current UTC time as microseconds since Unix epoch."""
+    return time.time_ns() // 1000
+
+
+def wrap_with_timestamp(value, timestamp_us: Optional[int] = None) -> dict:
+    """Wrap a data value with a host-side timestamp.
+
+    Output format:
+        {"timestamp_us": <int>, "data": <value>}
+
+    This aligns wujihandpy bridge output with wuji-sdk's timestamped data model,
+    using host-side UTC timestamps (since the CANopen PDO protocol has no device
+    timestamps).
+    """
+    if timestamp_us is None:
+        timestamp_us = get_timestamp_us()
+    return {"timestamp_us": timestamp_us, "data": value}
+
+
+logger = logging.getLogger("hand_bridge")
+
+
+def sanitize_sn(sn: str) -> str:
+    """Replace dots with underscores for Zenoh key expressions."""
+    return sn.replace(".", "_")
+
+
+# ---------------------------------------------------------------------------
+# Joint naming (matches wuji-description URDF)
+# ---------------------------------------------------------------------------
+
+# Resources that stream raw values without the {timestamp_us, data} envelope.
+# These typically expose ROS-compatible schemas (e.g. sensor_msgs/JointState)
+# so downstream viewers like Wuji Studio can identify them by schema name.
+_ENVELOPE_EXEMPT_PATHS = frozenset({"joint_states"})
+
+
+def make_joint_names(side: str) -> list:
+    """Build 20 joint names matching `wuji-description/hand/body/urdf/{side}.urdf`.
+
+    Row-major flatten order of the 5x4 joint array:
+        name[i * 4 + j] = f"{side}_finger{i+1}_joint{j+1}"
+    """
+    return [
+        f"{side}_finger{finger + 1}_joint{joint + 1}"
+        for finger in range(5)
+        for joint in range(4)
+    ]
+
+
+# Resource definitions
+RESOURCE_DEFS = [
+    # GET-only scalar resources
+    {
+        "path": "input_voltage",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {"title": "InputVoltage", "type": "number"},
+    },
+    {
+        "path": "temperature",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {"title": "Temperature", "type": "number"},
+    },
+    {
+        "path": "handedness",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {"title": "Handedness", "type": "integer"},
+    },
+    {
+        "path": "firmware_version",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {"title": "FirmwareVersion", "type": "integer"},
+    },
+    # GET-only array resources
+    {
+        "path": "joint/actual_position",
+        "can_get": True, "can_set": False, "can_sub": True,
+        "json_schema": {
+            "title": "JointActualPosition",
+            "type": "array",
+            "description": "5x4 joint positions (5 fingers x 4 joints)",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    {
+        "path": "joint/temperature",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {
+            "title": "JointTemperature",
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    {
+        "path": "joint/error_code",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {
+            "title": "JointErrorCode",
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "integer"}},
+        },
+    },
+    {
+        "path": "joint/effort_limit",
+        "can_get": True, "can_set": True, "can_sub": False,
+        "json_schema": {
+            "title": "JointEffortLimit",
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    {
+        "path": "joint/upper_limit",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {
+            "title": "JointUpperLimit",
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    {
+        "path": "joint/lower_limit",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {
+            "title": "JointLowerLimit",
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    {
+        "path": "joint/bus_voltage",
+        "can_get": True, "can_set": False, "can_sub": False,
+        "json_schema": {
+            "title": "JointBusVoltage",
+            "type": "array",
+            "description": "5x4 joint bus voltages",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    {
+        "path": "joint/actual_effort",
+        "can_get": True, "can_set": False, "can_sub": True,
+        "json_schema": {
+            "title": "JointActualEffort",
+            "type": "array",
+            "description": "5x4 joint actual effort (requires firmware >= 1.2.0)",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    # SET resources (require control)
+    {
+        "path": "joint/reset_error",
+        "can_get": False, "can_set": True, "can_sub": False,
+        "json_schema": {
+            "title": "JointResetError",
+            "type": "array",
+            "description": "5x4 joint error reset (write non-zero to reset)",
+            "items": {"type": "array", "items": {"type": "integer"}},
+        },
+    },
+    {
+        "path": "joint/control_mode",
+        "can_get": False, "can_set": True, "can_sub": False,
+        "json_schema": {
+            "title": "JointControlMode",
+            "type": "array",
+            "description": "5x4 joint control modes",
+            "items": {"type": "array", "items": {"type": "integer"}},
+        },
+    },
+    {
+        "path": "joint/enabled",
+        "can_get": False, "can_set": True, "can_sub": False,
+        "json_schema": {
+            "title": "JointEnabled",
+            "type": "array",
+            "description": "5x4 joint enabled states",
+            "items": {"type": "array", "items": {"type": "boolean"}},
+        },
+    },
+    {
+        "path": "joint/target_position",
+        "can_get": False, "can_set": True, "can_sub": False, "can_pub": True,
+        "json_schema": {
+            "title": "JointTargetPosition",
+            "type": "array",
+            "description": "5x4 joint target positions",
+            "items": {"type": "array", "items": {"type": "number"}},
+        },
+    },
+    # Title must stay exactly "sensor_msgs/JointState" — Studio's 3D panel
+    # keys on the schema title, so this path opts out of the timestamp
+    # envelope (see _ENVELOPE_EXEMPT_PATHS) and carries ordering in the
+    # standard ROS `header.stamp` instead.
+    {
+        "path": "joint_states",
+        "can_get": False, "can_set": False, "can_sub": True,
+        "json_schema": {
+            "title": "sensor_msgs/JointState",
+            "type": "object",
+            "properties": {
+                "header": {
+                    "type": "object",
+                    "properties": {
+                        "stamp": {
+                            "type": "object",
+                            "properties": {
+                                "sec":  {"type": "integer"},
+                                "nsec": {"type": "integer"},
+                            },
+                            "required": ["sec", "nsec"],
+                        },
+                        "frame_id": {"type": "string"},
+                    },
+                    "required": ["stamp", "frame_id"],
+                },
+                "name": {"type": "array", "items": {"type": "string"}},
+                "position": {"type": "array", "items": {"type": "number"}},
+            },
+            "required": ["header", "name", "position"],
+        },
+    },
+]
+
+
+def build_capability(serial_number: str) -> str:
+    """Build the @capability JSON response following wuji-sdk protocol."""
+    resources = []
+    for r in RESOURCE_DEFS:
+        resources.append({
+            "path": r["path"],
+            "schema_id": 0,
+            "can_get": r["can_get"],
+            "can_set": r["can_set"],
+            "can_sub": r["can_sub"],
+            "can_pub": r.get("can_pub", False),
+            "can_exec": False,
+            "internal": False,
+            "serde_format": "json",
+            "json_schema": r["json_schema"],
+        })
+
+    # Wrap SUB resource schemas with timestamp envelope (except exempt paths)
+    for res in resources:
+        if (
+            res["can_sub"]
+            and res.get("json_schema")
+            and res["path"] not in _ENVELOPE_EXEMPT_PATHS
+        ):
+            original_schema = res["json_schema"]
+            res["json_schema"] = {
+                "title": original_schema.get("title", "") + "Timestamped",
+                "type": "object",
+                "description": "Host-timestamped envelope: {timestamp_us, data}",
+                "properties": {
+                    "timestamp_us": {"type": "integer", "description": "UTC microseconds since epoch"},
+                    "data": original_schema,
+                },
+                "required": ["timestamp_us", "data"],
+            }
+
+    capability = {
+        "device_id": 0,
+        "device_proto": "custom",
+        "firmware_version": "",
+        "serial_number": serial_number,
+        "nodes": [],
+        "resources": resources,
+    }
+    return json.dumps(capability)
+
+
+class HandBridge:
+    """Bridge between wujihandpy and Zenoh network.
+
+    Uses realtime_controller for target_position writes (PDO 1kHz with
+    LowPass interpolation) instead of SDO for smooth motion control.
+    """
+
+    def __init__(
+        self,
+        hand,
+        serial_number: str,
+        pub_rate: float,
+        side: str = "left",
+        filter_cutoff_hz: float = 5.0,
+    ):
+        """Initialize the Hand Zenoh Bridge.
+
+        Args:
+            hand: A wujihandpy.Hand instance (USB-connected).
+            serial_number: Device serial number for Zenoh key registration.
+            pub_rate: SUB resource publish rate in Hz (e.g. 1000). Must be positive.
+            side: Which hand's joint names to publish for `joint_states`
+                  ("left" or "right"). Must match the URDF side loaded in Studio.
+                  Defaults to "left" for programmatic / unit-test callers; the
+                  CLI entry point (`main`) requires it explicitly via `--side`.
+            filter_cutoff_hz: LowPass cutoff frequency applied by the internal
+                  realtime_controller to smooth target_position writes. The
+                  filter runs at PDO rate (1 kHz) and bridges the gap between
+                  the bridge's 100 Hz feed loop and the motor's 1 kHz update
+                  rate — lower = smoother / slower response, higher =
+                  snappier / noisier. Defaults to 5 Hz, matching
+                  `wujihandpy/example/3.realtime.py`. Must be positive.
+
+        Raises:
+            ValueError: If pub_rate is not positive, side is not 'left'/'right',
+                or filter_cutoff_hz is not positive.
+        """
+        if pub_rate <= 0:
+            raise ValueError(f"pub_rate must be positive, got {pub_rate}")
+        if side not in ("left", "right"):
+            raise ValueError(f"side must be 'left' or 'right', got {side!r}")
+        if filter_cutoff_hz <= 0:
+            raise ValueError(
+                f"filter_cutoff_hz must be positive, got {filter_cutoff_hz}"
+            )
+        self.hand = hand
+        self.sn = serial_number
+        self.sanitized_sn = sanitize_sn(serial_number)
+        self.pub_rate = pub_rate
+        self._side = side
+        self._joint_names = make_joint_names(side)
+        self._filter_cutoff_hz = filter_cutoff_hz
+        self.session = None
+        self._alive_token = None
+        self._running = False
+        self._threads = []
+        self._queryables = []
+        self._subscribers = []
+        self._publishers = {}
+        self._hand_lock = threading.Lock()
+        # Strictly-monotonic ns timestamp for `header.stamp` on joint_states.
+        # Uses CLOCK_MONOTONIC (time.monotonic_ns) so NTP / wall-clock jumps
+        # can't cause regressions, plus a +1 floor against same-value reads.
+        self._stamp_lock = threading.Lock()
+        self._last_stamp_ns = 0
+        # Realtime controller state
+        self._controller = None
+        self._rt_target = np.zeros((5, 4), dtype=np.float64)
+        self._rt_lock = threading.Lock()
+        # Allow multi-thread access (we protect with our own lock)
+        hand.disable_thread_safe_check()
+
+    def _key(self, suffix: str) -> str:
+        """Build a Zenoh key expression: wuji/{sanitized_sn}/{suffix}."""
+        return f"wuji/{self.sanitized_sn}/{suffix}"
+
+    def _next_stamp_ns(self) -> int:
+        """Strictly-monotonic nanosecond stamp for `header.stamp`.
+
+        time.monotonic_ns() is CLOCK_MONOTONIC (immune to wall-clock jumps /
+        NTP slewing), but adjacent calls can return the same value on
+        low-resolution timers. The +1 floor guarantees strict `>`.
+        """
+        with self._stamp_lock:
+            now = time.monotonic_ns()
+            if now <= self._last_stamp_ns:
+                now = self._last_stamp_ns + 1
+            self._last_stamp_ns = now
+            return now
+
+    def _undeclare(self, entity, label: str):
+        """Best-effort undeclare for Zenoh entities during shutdown."""
+        if entity is None:
+            return
+        try:
+            entity.undeclare()
+        except Exception as e:
+            logger.debug(f"Failed to undeclare {label}: {e}")
+
+    def _close_session(self, session):
+        """Best-effort session close used by stop/startup rollback."""
+        if session is None:
+            return
+        close = getattr(session, "close", None)
+        if close is None:
+            return
+        try:
+            close()
+        except Exception as e:
+            logger.debug(f"Failed to close Zenoh session: {e}")
+
+    def _start_realtime_controller(self):
+        """Enable joints and start realtime controller (raw passthrough)."""
+        import wujihandpy
+
+        # Set control mode to RT_FCL (9) for force-closed-loop, matching HMI behavior
+        RT_FCL_MODE = 9
+        logger.info("Setting control mode to RT_FCL (%d)...", RT_FCL_MODE)
+        self.hand.write_joint_control_mode(np.full((5, 4), RT_FCL_MODE, dtype=np.int32))
+        time.sleep(0.5)
+
+        logger.info("Enabling all joints...")
+        self.hand.write_joint_enabled(True)
+        time.sleep(0.3)
+
+        # Read initial position as starting target
+        initial_pos = self.hand.read_joint_actual_position()
+        with self._rt_lock:
+            self._rt_target = initial_pos.copy()
+
+        # LowPass filter runs at PDO rate (1 kHz) inside the realtime controller,
+        # smoothing the 100 Hz feed loop's step-changes out to 1 ms granularity
+        # before they reach the motor. Cutoff is configurable via `--filter-cutoff`
+        # (default 5 Hz, matching wujihandpy/example/3.realtime.py). A very high
+        # cutoff (e.g. 10000 Hz) approximates a passthrough if callers prefer to
+        # supply pre-filtered targets.
+        logger.info(
+            "Starting realtime controller (lowpass cutoff=%.1f Hz, upstream enabled)...",
+            self._filter_cutoff_hz,
+        )
+        self._controller = self.hand.realtime_controller(
+            enable_upstream=True,
+            filter=wujihandpy.filter.LowPass(cutoff_freq=self._filter_cutoff_hz),
+        )
+        self._controller.__enter__()
+
+        # Start the realtime feed loop (100Hz -> 1kHz via controller interpolation)
+        t = threading.Thread(target=self._realtime_loop, daemon=True)
+        t.start()
+        self._threads.append(t)
+        logger.info("Realtime controller started")
+
+    def _stop_realtime_controller(self):
+        """Stop realtime controller and disable joints."""
+        controller = self._controller
+        if controller is not None:
+            logger.info("Stopping realtime controller...")
+            # Set target to zero before stopping
+            with self._rt_lock:
+                self._rt_target = np.zeros((5, 4), dtype=np.float64)
+                target = self._rt_target.copy()
+            controller.set_joint_target_position(target)
+            time.sleep(1.0)
+
+            controller.__exit__(None, None, None)
+            self._controller = None
+            logger.info("Realtime controller stopped")
+
+        logger.info("Disabling all joints...")
+        self.hand.write_joint_enabled(False)
+
+    def _realtime_loop(self):
+        """Feed target position to realtime controller at 100Hz."""
+        period = 1.0 / 100.0
+        while self._running:
+            try:
+                with self._rt_lock:
+                    target = self._rt_target.copy()
+                    controller = self._controller
+                if controller is None:
+                    break
+                controller.set_joint_target_position(target)
+            except Exception as e:
+                logger.error(f"Realtime loop error: {e}")
+            time.sleep(period)
+
+    def start(self):
+        """Open Zenoh session, declare liveliness, publish status, start queryables."""
+        try:
+            logger.info("Opening Zenoh session...")
+            config = zenoh.Config()
+            self.session = zenoh.open(config)
+            zid = str(self.session.zid())
+            logger.info(f"Zenoh session opened, ZID: {zid}")
+
+            # 1. Liveliness token
+            self._alive_token = self.session.liveliness().declare_token(self._key("@alive"))
+            logger.info(f"Liveliness token declared: {self._key('@alive')}")
+
+            # 2. Start realtime controller BEFORE exposing queryables
+            self._running = True
+            self._start_realtime_controller()
+
+            # 3. Status: online (after controller is ready)
+            self.session.put(self._key("@status"), b"online")
+            logger.info("Status: online")
+
+            # 4. Capability queryable
+            cap_bytes = build_capability(self.sn).encode("utf-8")
+            self._queryables.append(self.session.declare_queryable(
+                self._key("@capability"),
+                lambda query, data=cap_bytes: query.reply(self._key("@capability"), data),
+            ))
+            logger.info("@capability queryable declared")
+
+            # 5. Resource queryables (GET/SET)
+            for r in RESOURCE_DEFS:
+                if r["can_get"] or r["can_set"]:
+                    q = self.session.declare_queryable(
+                        self._key(r["path"]),
+                        lambda query, res=r: self._handle_resource_query(query, res),
+                    )
+                    self._queryables.append(q)
+                    logger.info(f"Resource queryable: {r['path']}")
+
+            # 6. Subscribe to target_position for fire-and-forget writes (low latency)
+            target_pos_sub = self.session.declare_subscriber(
+                self._key("joint/target_position"),
+                self._handle_target_position_put,
+            )
+            self._subscribers.append(target_pos_sub)
+            logger.info("target_position subscriber declared (fire-and-forget path)")
+
+            # 7. SUB publishers (continuous streams)
+            for r in RESOURCE_DEFS:
+                if r["can_sub"]:
+                    pub = self.session.declare_publisher(self._key(r["path"]))
+                    self._publishers[r["path"]] = pub
+
+            if self._publishers:
+                t = threading.Thread(target=self._publish_loop, daemon=True)
+                t.start()
+                self._threads.append(t)
+                logger.info(f"Publisher loop started at {self.pub_rate} Hz")
+
+            logger.info("Hand Zenoh Bridge fully started")
+        except Exception:
+            logger.exception("Bridge startup failed, cleaning up partial state")
+            self.stop()
+            raise
+
+    def stop(self):
+        """Gracefully shutdown."""
+        logger.info("Stopping bridge...")
+        self._running = False
+
+        for t in self._threads:
+            try:
+                t.join(timeout=2.0)
+            except Exception as e:
+                logger.debug(f"Failed to join bridge thread: {e}")
+        self._threads.clear()
+
+        try:
+            self._stop_realtime_controller()
+        except Exception as e:
+            logger.warning(f"Failed to stop realtime controller: {e}")
+
+        session = self.session
+        if session is not None:
+            try:
+                session.put(self._key("@status"), b"offline")
+                logger.info("Status: offline")
+            except Exception as e:
+                logger.debug(f"Failed to publish offline status: {e}")
+
+        for idx, queryable in enumerate(self._queryables):
+            self._undeclare(queryable, f"queryable[{idx}]")
+        for idx, subscriber in enumerate(self._subscribers):
+            self._undeclare(subscriber, f"subscriber[{idx}]")
+        for path, publisher in self._publishers.items():
+            self._undeclare(publisher, f"publisher[{path}]")
+        self._undeclare(self._alive_token, "alive token")
+
+        self._queryables.clear()
+        self._subscribers.clear()
+        self._publishers.clear()
+        self._alive_token = None
+        self.session = None
+        self._close_session(session)
+        logger.info("Bridge stopped")
+
+    def _handle_resource_query(self, query, resource_def):
+        """Handle GET/SET for a resource.
+
+        Note: write operations (SET / target_position PUT) are no longer gated
+        by an `@control` acquire/release handshake. Any client that can reach
+        this bridge via Zenoh may write. Single-writer protection, if needed,
+        must be enforced by the deployment topology (e.g. firewall rules,
+        Zenoh access control).
+        """
+        key = self._key(resource_def["path"])
+        payload = bytes(query.payload) if query.payload else b""
+
+        if len(payload) == 0:
+            # GET replies keep the resource's original JSON schema.
+            if not resource_def["can_get"]:
+                query.reply_err(b"GET not supported")
+                return
+            try:
+                value = self._read_resource(resource_def["path"])
+                query.reply(key, json.dumps(value).encode("utf-8"))
+            except Exception as e:
+                logger.error(f"GET {resource_def['path']} failed: {e}")
+                query.reply_err(str(e).encode())
+        else:
+            # SET
+            if not resource_def["can_set"]:
+                query.reply_err(b"SET not supported")
+                return
+            try:
+                value = json.loads(payload.decode("utf-8"))
+                self._write_resource(resource_def["path"], value)
+                query.reply(key, b'"ok"')
+            except Exception as e:
+                logger.error(f"SET {resource_def['path']} failed: {e}")
+                query.reply_err(str(e).encode())
+
+    def _handle_target_position_put(self, sample):
+        """Handle fire-and-forget PUT for target_position (low-latency path).
+
+        See `_handle_resource_query` for the rationale on dropping the
+        per-write control-owner check.
+        """
+        try:
+            value = json.loads(bytes(sample.payload).decode("utf-8"))
+            self._write_resource("joint/target_position", value)
+        except ValueError as e:
+            logger.warning(f"Invalid target_position PUT ignored: {e}")
+        except Exception as e:
+            logger.error(f"target_position subscriber error: {e}")
+
+    def _read_joint_actual_position(self):
+        """Fetch the 5x4 actual-position array from the best available source.
+
+        Prefers the realtime controller's zero-copy cache; falls back to SDO
+        under hand_lock. Shared by `joint/actual_position` and `joint_states`
+        so both reflect the same underlying sample.
+        """
+        controller = self._controller
+        if controller is not None:
+            return controller.get_joint_actual_position()
+        with self._hand_lock:
+            return self.hand.read_joint_actual_position()
+
+    def _read_resource(self, path: str):
+        """Read a resource from the hand, return JSON-serializable value.
+
+        For actual_position, reads from realtime controller cache (non-blocking)
+        when available. Other resources use SDO with hand_lock.
+        """
+        controller = self._controller
+
+        if path == "joint/actual_position":
+            return self._read_joint_actual_position().tolist()
+
+        if path == "joint/actual_effort":
+            if controller is not None:
+                return controller.get_joint_actual_effort().tolist()
+            # actual_effort is only exposed from the realtime controller cache;
+            # during shutdown races, return a zeroed snapshot instead of failing.
+            return np.zeros((5, 4), dtype=np.float64).tolist()
+
+        if path == "joint_states":
+            pos = self._read_joint_actual_position()
+            ns = self._next_stamp_ns()
+            return {
+                "header": {
+                    "stamp": {"sec": ns // 1_000_000_000, "nsec": ns % 1_000_000_000},
+                    "frame_id": f"{self._side}_palm_link",
+                },
+                "name": self._joint_names,
+                "position": pos.flatten().tolist(),
+            }
+
+        # All other reads need SDO access via hand_lock
+        with self._hand_lock:
+            if path == "input_voltage":
+                return float(self.hand.read_input_voltage())
+            elif path == "temperature":
+                return float(self.hand.read_temperature())
+            elif path == "handedness":
+                return int(self.hand.read_handedness())
+            elif path == "firmware_version":
+                return int(self.hand.read_firmware_version())
+            elif path == "joint/temperature":
+                return self.hand.read_joint_temperature().tolist()
+            elif path == "joint/error_code":
+                return self.hand.read_joint_error_code().tolist()
+            elif path == "joint/effort_limit":
+                return self.hand.read_joint_effort_limit().tolist()
+            elif path == "joint/upper_limit":
+                return self.hand.read_joint_upper_limit().tolist()
+            elif path == "joint/lower_limit":
+                return self.hand.read_joint_lower_limit().tolist()
+            elif path == "joint/bus_voltage":
+                return self.hand.read_joint_bus_voltage().tolist()
+            else:
+                raise ValueError(f"Unknown GET resource: {path}")
+
+    def _write_resource(self, path: str, value):
+        """Write a resource to the hand.
+
+        For target_position, updates the realtime controller target atomically
+        (non-blocking). Other writes use SDO with hand_lock.
+        """
+        if path == "joint/target_position":
+            arr = np.asarray(value, dtype=np.float64)
+            if arr.shape != (5, 4):
+                raise ValueError(f"target_position must be 5x4 array, got shape {arr.shape}")
+            if not np.isfinite(arr).all():
+                raise ValueError("target_position contains non-finite values")
+            # Atomically update realtime target - no SDO, no blocking
+            with self._rt_lock:
+                self._rt_target = arr
+            return
+
+        # Other writes need SDO access
+        with self._hand_lock:
+            if path == "joint/control_mode":
+                self.hand.write_joint_control_mode(np.array(value, dtype=np.int32))
+            elif path == "joint/enabled":
+                self.hand.write_joint_enabled(np.array(value, dtype=bool))
+            elif path == "joint/effort_limit":
+                self.hand.write_joint_effort_limit(np.array(value, dtype=np.float64))
+            elif path == "joint/reset_error":
+                self.hand.write_joint_reset_error(np.array(value, dtype=np.uint16))
+            else:
+                raise ValueError(f"Unknown SET resource: {path}")
+
+    def _publish_loop(self):
+        """Continuously publish SUB resources at configured rate.
+
+        Most messages are wrapped with a host-side timestamp:
+            {"timestamp_us": <UTC microseconds>, "data": <value>}
+
+        Paths listed in `_ENVELOPE_EXEMPT_PATHS` are published as-is, so their
+        schema title (advertised in @capability) matches the declared type
+        (e.g. `sensor_msgs/JointState`) and downstream consumers can identify
+        them without unwrapping.
+        """
+        period = 1.0 / self.pub_rate
+        while self._running:
+            try:
+                timestamp_us = get_timestamp_us()
+                for path, pub in self._publishers.items():
+                    value = self._read_resource(path)
+                    if path in _ENVELOPE_EXEMPT_PATHS:
+                        payload = value
+                    else:
+                        payload = wrap_with_timestamp(value, timestamp_us)
+                    data = json.dumps(payload).encode("utf-8")
+                    pub.put(data)
+            except Exception as e:
+                logger.error(f"Publish loop error: {e}")
+            time.sleep(period)
+
+
+def main():
+    """Entry point: parse args, connect to hand, start Zenoh bridge."""
+    parser = argparse.ArgumentParser(description="Wuji Hand Zenoh Bridge")
+    parser.add_argument("--sn", type=str, default=None, help="Hand serial number filter")
+    parser.add_argument("--pub-rate", type=float, required=True, help="Position publish rate in Hz (e.g. 1000)")
+    parser.add_argument(
+        "--side",
+        type=str,
+        required=True,
+        choices=("left", "right"),
+        help=(
+            "Which hand this bridge represents. Drives the joint names published "
+            "on `joint_states` (e.g. left_finger1_joint1). Must match the URDF "
+            "loaded in Wuji Studio."
+        ),
+    )
+    parser.add_argument(
+        "--filter-cutoff",
+        type=float,
+        default=5.0,
+        help=(
+            "LowPass cutoff (Hz) for the internal realtime_controller. Smooths "
+            "target_position writes at PDO 1 kHz. Lower = smoother / slower, "
+            "higher = snappier / noisier. Set very high (e.g. 10000) to "
+            "approximate passthrough if you pre-filter targets client-side. "
+            "Default: 5.0 (matches wujihandpy/example/3.realtime.py)."
+        ),
+    )
+    parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper()),
+        format="%(asctime)s [%(name)s] [%(levelname)s] %(message)s",
+    )
+
+    import wujihandpy
+
+    logger.info("Connecting to hand...")
+    hand = wujihandpy.Hand(serial_number=args.sn)
+
+    try:
+        sn = hand.get_product_sn() or f"WUJIHAND_{id(hand):08X}"
+    except Exception:
+        sn = f"WUJIHAND_{id(hand):08X}"
+        logger.warning(f"Could not read product SN (firmware too old?), using: {sn}")
+    logger.info(f"Hand connected, SN: {sn}")
+
+    bridge = HandBridge(
+        hand,
+        serial_number=sn,
+        pub_rate=args.pub_rate,
+        side=args.side,
+        filter_cutoff_hz=args.filter_cutoff,
+    )
+    try:
+        bridge.start()
+        logger.info("Bridge running. Press Ctrl+C to stop.")
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        bridge.stop()
+        logger.info("Exiting.")
+
+
+if __name__ == "__main__":
+    main()

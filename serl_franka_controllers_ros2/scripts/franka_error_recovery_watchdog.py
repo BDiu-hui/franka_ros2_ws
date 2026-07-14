@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -37,6 +38,11 @@ from std_msgs.msg import Bool
 
 class FrankaErrorRecoveryWatchdog(Node):
     """Clear Franka reflex errors and restart impedance after hardware-interface faults."""
+
+    _CONTROL_MANAGER_LOGGER_RE = re.compile(
+        r"\[([A-Za-z0-9_.\-/]+)\.controller_manager\]"
+    )
+    _LOG_NAMESPACE_SCAN_BYTES = 128 * 1024
 
     def __init__(self) -> None:
         super().__init__("franka_error_recovery_watchdog")
@@ -201,7 +207,9 @@ class FrankaErrorRecoveryWatchdog(Node):
         self._latest_jacobian: List[float] | None = None
         self._latest_o_t_ee_lock = threading.Lock()
         self._start_wall_time = time.time()
+        self._watchdog_namespace = self._normalize_ros_name(self.get_namespace())
         self._log_file_offsets: dict[Path, int] = {}
+        self._log_file_namespace_cache: dict[Path, str] = {}
         self._log_file_dir = self._resolve_log_file_dir()
         if self.log_file_polling_enabled:
             self.create_timer(self.log_file_poll_interval_sec, self._poll_ros2_control_logs)
@@ -212,13 +220,16 @@ class FrankaErrorRecoveryWatchdog(Node):
             f"enabled={self.enabled}, action={self.error_recovery_action}, "
             f"state_topic={self.franka_state_topic}, switch_service={switch_service}, "
             f"restart_impedance={self.restart_impedance_after_recovery}, "
+            f"scope={self._watchdog_namespace or '<root>'}, "
             f"log_polling={self.log_file_polling_enabled}, log_dir={self._log_file_dir}"
         )
 
     def _rosout_callback(self, msg: Log) -> None:
         if not self.enabled:
             return
-        if msg.name == self.get_logger().name:
+        if self._is_watchdog_logger(msg.name):
+            return
+        if not self._logger_belongs_to_namespace(msg.name, self._watchdog_namespace):
             return
         stamp_sec = float(msg.stamp.sec) + float(msg.stamp.nanosec) * 1e-9
         if stamp_sec > 0.0 and stamp_sec < self._start_wall_time - 5.0:
@@ -787,11 +798,67 @@ class FrankaErrorRecoveryWatchdog(Node):
         paths = []
         for path in self._log_file_dir.glob(self.log_file_glob):
             try:
-                if now - path.stat().st_mtime <= self.log_file_max_age_sec:
+                if (
+                    now - path.stat().st_mtime <= self.log_file_max_age_sec
+                    and self._log_file_belongs_to_namespace(
+                        path, self._watchdog_namespace
+                    )
+                ):
                     paths.append(path)
             except OSError:
                 continue
         return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)[:4]
+
+    def _log_file_belongs_to_namespace(self, path: Path, namespace: str) -> bool:
+        if not namespace:
+            return True
+
+        if path in self._log_file_namespace_cache:
+            return self._log_file_namespace_cache[path] == namespace
+
+        owner = self._detect_log_file_namespace(path)
+        if owner is None:
+            # A newly-created log may not contain its controller-manager banner yet.
+            # Do not cache this result so the next polling cycle can identify it.
+            return False
+
+        self._log_file_namespace_cache[path] = owner
+        return owner == namespace
+
+    @classmethod
+    def _detect_log_file_namespace(cls, path: Path) -> str | None:
+        with path.open("r", encoding="utf-8", errors="replace") as log_file:
+            sample = log_file.read(cls._LOG_NAMESPACE_SCAN_BYTES)
+
+        match = cls._CONTROL_MANAGER_LOGGER_RE.search(sample)
+        if match:
+            return cls._normalize_ros_name(match.group(1))
+        if "[controller_manager]" in sample:
+            return ""
+        return None
+
+    @staticmethod
+    def _normalize_ros_name(name: str) -> str:
+        return ".".join(
+            part for part in str(name).replace("/", ".").split(".") if part
+        )
+
+    @classmethod
+    def _logger_belongs_to_namespace(cls, logger_name: str, namespace: str) -> bool:
+        normalized_namespace = cls._normalize_ros_name(namespace)
+        if not normalized_namespace:
+            return True
+        normalized_logger = cls._normalize_ros_name(logger_name)
+        return normalized_logger == normalized_namespace or normalized_logger.startswith(
+            f"{normalized_namespace}."
+        )
+
+    @classmethod
+    def _is_watchdog_logger(cls, logger_name: str) -> bool:
+        normalized_logger = cls._normalize_ros_name(logger_name)
+        return normalized_logger == "franka_error_recovery_watchdog" or normalized_logger.endswith(
+            ".franka_error_recovery_watchdog"
+        )
 
     @staticmethod
     def _resolve_log_file_dir() -> Path:

@@ -1,0 +1,34 @@
+.vscode/
+.cache/
+
+.venv/
+
+build/
+package-build/
+wheelhouse/
+dist/
+_build/
+_generate/
+*.so
+*.py[cod]
+*.egg-info
+*env*
+
+compile_commands.json
+
+src/wujihandpy/_version.py
+
+docs/plans/
+docs/internal/
+
+# HIL test scripts are local-only (need a physical board; this is a
+# public repo). Gate the script entry with WUJIHAND_HIL=1 (see
+# tests/README.md). Use the .local_*.py prefix for personal one-offs.
+tests/hil_*.py
+tests/.local_*.py
+
+# Claude-mem generated files (keep root CLAUDE.md)
+**/CLAUDE.md
+!/CLAUDE.md
+# Tool runtime lock files
+.claude/

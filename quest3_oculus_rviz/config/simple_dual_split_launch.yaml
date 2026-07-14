@@ -82,7 +82,7 @@ policy_inference:
   left_wuji_serial: 3566377E3533
   right_wuji_serial: 3671354F3333
   wuji_dry_run: false
-  wujihand_state_rate: 1000.0
+  wujihand_state_rate: 200.0
   auto_start_impedance: true
   auto_recover_after_reflex: true
   left_server_port: 5000
@@ -96,8 +96,8 @@ policy_inference:
   right_http_server_cpu: 12
   right_watchdog_cpu: 12
   wuji_cpu: 20
-  left_wujihand_driver_cpu: 21
-  right_wujihand_driver_cpu: 23
+  left_wujihand_driver_cpu: 24
+  right_wujihand_driver_cpu: 25
 
 # 只启动 Quest reader、左右摇操节点和 Wuji，不重复启动 Franka 控制栈。
 # 使用这个 profile 前，需要先用 franka_stack 把左右 Franka 控制栈启动起来。
@@ -127,7 +127,7 @@ quest_teleop:
   # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
   wuji_dry_run: false
   # 官方 Wuji driver 的当前关节状态发布频率，单位 Hz。
-  wujihand_state_rate: 1000.0
+  wujihand_state_rate: 200.0
   # 是否启动双臂 HDF5 数据采集节点（依赖 Quest 按钮和鱼眼相机，属于 teleop 侧）。
   start_data_recorder: true
   # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
@@ -143,11 +143,11 @@ quest_teleop:
   # Wuji trigger hand 节点绑定 CPU。
   wuji_cpu: 20
   # 左 Wuji 官方 driver 绑定 CPU。
-  left_wujihand_driver_cpu: 21
+  left_wujihand_driver_cpu: 24
   # 数据采集节点绑定 CPU。
   data_recorder_cpu: 22
   # 右 Wuji 官方 driver 绑定 CPU。
-  right_wujihand_driver_cpu: 23
+  right_wujihand_driver_cpu: 25
 
 # 一条命令启动全部节点: 左右 Franka 控制栈 + Quest reader + 左右摇操 + Wuji。
 # 这是最方便的入口；如果还出现 reflex 干扰，再改用 franka_stack + quest_teleop 双终端方式隔离。
@@ -209,7 +209,7 @@ all_in_one:
   # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
   wuji_dry_run: false
   # 官方 Wuji driver 的当前关节状态发布频率，单位 Hz。
-  wujihand_state_rate: 1000.0
+  wujihand_state_rate: 200.0
   # 是否启动双臂 HDF5 数据采集节点。
   start_data_recorder: true
   # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
@@ -225,8 +225,8 @@ all_in_one:
   # Wuji trigger hand 节点绑定 CPU。
   wuji_cpu: 20
   # 左 Wuji 官方 driver 绑定 CPU。
-  left_wujihand_driver_cpu: 21
+  left_wujihand_driver_cpu: 24
   # 数据采集节点绑定 CPU。
   data_recorder_cpu: 22
   # 右 Wuji 官方 driver 绑定 CPU。
-  right_wujihand_driver_cpu: 23
+  right_wujihand_driver_cpu: 25
