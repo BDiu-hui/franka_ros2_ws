@@ -30,7 +30,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 from serl_franka_controllers_ros2.msg import CartesianImpedanceCommand
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from quest3_oculus_rviz.fish_eye_manager import FishEyeManager
 
@@ -112,6 +112,14 @@ class Quest3DataRecorderNode(Node):
                 f"{name}.hand_actual_joint_states_topic",
                 f"/hand_{name}/joint_states",
             )
+            self.declare_parameter(
+                f"{name}.teleop_enabled_topic",
+                f"/quest3/{name}_impedance_teleop/enabled",
+            )
+            self.declare_parameter(
+                f"{name}.enable_analog_name",
+                f"{name}Grip",
+            )
 
         self.out_data_dir = Path(str(self.get_parameter("out_data_dir").value))
         self.recording_rate_hz = max(float(self.get_parameter("recording_rate_hz").value), 1.0)
@@ -179,12 +187,20 @@ class Quest3DataRecorderNode(Node):
         if not self.arm_names:
             raise ValueError("arm_names must not be empty")
         self.arm_topics: dict[str, dict[str, str]] = {}
+        self.arm_enable_analog_names: dict[str, str] = {}
         for name in self.arm_names:
             # Ensure params exist for any non-default arms supplied via YAML.
-            for key in ("cmd_topic", "current_pose_topic", "wrench_topic",
-                        "gripper_joint_states_topic", "hand_command_topic",
-                        "hand_joint_states_topic",
-                        "hand_actual_joint_states_topic"):
+            for key in (
+                "cmd_topic",
+                "current_pose_topic",
+                "wrench_topic",
+                "gripper_joint_states_topic",
+                "hand_command_topic",
+                "hand_joint_states_topic",
+                "hand_actual_joint_states_topic",
+                "teleop_enabled_topic",
+                "enable_analog_name",
+            ):
                 if not self.has_parameter(f"{name}.{key}"):
                     self.declare_parameter(f"{name}.{key}", "")
             hand_command_topic = str(
@@ -203,7 +219,17 @@ class Quest3DataRecorderNode(Node):
                 "hand_actual": str(
                     self.get_parameter(f"{name}.hand_actual_joint_states_topic").value
                 ),
+                "teleop_enabled": str(
+                    self.get_parameter(f"{name}.teleop_enabled_topic").value
+                ),
             }
+            self.arm_enable_analog_names[name] = str(
+                self.get_parameter(f"{name}.enable_analog_name").value
+            )
+            if not self.arm_enable_analog_names[name]:
+                raise ValueError(
+                    f"missing enable analog name for arm '{name}'"
+                )
             for key, value in self.arm_topics[name].items():
                 required = key not in ("hand", "hand_actual")
                 required = required or (
@@ -228,6 +254,12 @@ class Quest3DataRecorderNode(Node):
         self._latest_hand_actual: dict[str, np.ndarray | None] = {
             n: None for n in self.arm_names
         }
+        self._latest_side_grip: dict[str, float] = {
+            n: 0.0 for n in self.arm_names
+        }
+        self._latest_teleop_enabled: dict[str, bool] = {
+            n: False for n in self.arm_names
+        }
         self._latest_hand_names: dict[str, list[str]] = {n: [] for n in self.arm_names}
         self._latest_hand_actual_names: dict[str, list[str]] = {
             n: [] for n in self.arm_names
@@ -240,6 +272,12 @@ class Quest3DataRecorderNode(Node):
         self._gripper_buf: dict[str, list[float]] = {n: [] for n in self.arm_names}
         self._hand_buf: dict[str, list[np.ndarray]] = {n: [] for n in self.arm_names}
         self._hand_actual_buf: dict[str, list[np.ndarray]] = {
+            n: [] for n in self.arm_names
+        }
+        self._side_grip_buf: dict[str, list[float]] = {
+            n: [] for n in self.arm_names
+        }
+        self._teleop_enabled_buf: dict[str, list[bool]] = {
             n: [] for n in self.arm_names
         }
         self._image_buf: dict[str, list[np.ndarray | bytes]] = {
@@ -303,6 +341,14 @@ class Quest3DataRecorderNode(Node):
                         qos_profile_sensor_data,
                     )
                 )
+            self._subs.append(
+                self.create_subscription(
+                    Bool,
+                    topics["teleop_enabled"],
+                    self._make_teleop_enabled_cb(name),
+                    10,
+                )
+            )
         self.buttons_sub = self.create_subscription(
             String, self.buttons_topic, self._buttons_callback, 10
         )
@@ -444,6 +490,13 @@ class Quest3DataRecorderNode(Node):
                     )
         return cb
 
+    def _make_teleop_enabled_cb(self, name: str):
+        def cb(msg: Bool) -> None:
+            with self._state_lock:
+                self._latest_teleop_enabled[name] = bool(msg.data)
+
+        return cb
+
     def _coerce_hand_positions(self, positions: Any) -> np.ndarray:
         values = np.asarray(list(positions), dtype=np.float32).reshape(-1)
         if values.size == self.hand_joint_count:
@@ -467,6 +520,15 @@ class Quest3DataRecorderNode(Node):
         start_pressed = start_val >= self.trigger_threshold
         stop_pressed = stop_val >= self.trigger_threshold
         delete_pressed = delete_val >= self.trigger_threshold
+
+        side_grips = {
+            name: self._button_scalar(
+                parsed.get(self.arm_enable_analog_names[name], 0.0)
+            )
+            for name in self.arm_names
+        }
+        with self._state_lock:
+            self._latest_side_grip.update(side_grips)
 
         # Rising-edge detection avoids re-triggering while the button is held.
         if start_pressed and not self._prev_start_pressed:
@@ -574,6 +636,8 @@ class Quest3DataRecorderNode(Node):
             self._gripper_buf,
             self._hand_buf,
             self._hand_actual_buf,
+            self._side_grip_buf,
+            self._teleop_enabled_buf,
         ):
             for name in buf:
                 buf[name].clear()
@@ -589,6 +653,12 @@ class Quest3DataRecorderNode(Node):
             hands = {n: self._latest_hand[n] for n in self.arm_names}
             hand_actuals = {
                 n: self._latest_hand_actual[n] for n in self.arm_names
+            }
+            side_grips = {
+                n: self._latest_side_grip[n] for n in self.arm_names
+            }
+            teleop_enabled = {
+                n: self._latest_teleop_enabled[n] for n in self.arm_names
             }
 
         # Require every per-arm channel before we commit a row, so the
@@ -641,6 +711,8 @@ class Quest3DataRecorderNode(Node):
                         dtype=np.float32,
                     )
                 )
+            self._side_grip_buf[name].append(float(side_grips[name]))
+            self._teleop_enabled_buf[name].append(bool(teleop_enabled[name]))
         for cam in self.cameras_cfg:
             if cam in frames:
                 self._image_buf[cam].append(frames[cam])
@@ -688,6 +760,11 @@ class Quest3DataRecorderNode(Node):
                 n = min(n, len(self._hand_buf[name]))
             if self.record_hand_actual_joint_positions:
                 n = min(n, len(self._hand_actual_buf[name]))
+            n = min(
+                n,
+                len(self._side_grip_buf[name]),
+                len(self._teleop_enabled_buf[name]),
+            )
         if self.camera_manager is not None:
             for cam in self.cameras_cfg:
                 n = min(n, len(self._image_buf[cam]))
@@ -723,6 +800,33 @@ class Quest3DataRecorderNode(Node):
                         name,
                         data=np.asarray(self._gripper_buf[name][:n], dtype=np.float32),
                     )
+
+                side_grip_grp = obs.create_group("controller_side_grip")
+                side_grip_grp.attrs["source_topic"] = self.buttons_topic
+                side_grip_grp.attrs["pressed_threshold"] = self.trigger_threshold
+                for name in self.arm_names:
+                    ds = side_grip_grp.create_dataset(
+                        name,
+                        data=np.asarray(
+                            self._side_grip_buf[name][:n],
+                            dtype=np.float32,
+                        ),
+                    )
+                    ds.attrs["source_key"] = self.arm_enable_analog_names[name]
+
+                teleop_enabled_grp = obs.create_group("teleop_enabled")
+                teleop_enabled_grp.attrs["encoding"] = "0=false, 1=true"
+                for name in self.arm_names:
+                    ds = teleop_enabled_grp.create_dataset(
+                        name,
+                        data=np.asarray(
+                            self._teleop_enabled_buf[name][:n],
+                            dtype=np.uint8,
+                        ),
+                    )
+                    ds.attrs["source_topic"] = self.arm_topics[name][
+                        "teleop_enabled"
+                    ]
 
                 if self.record_hand_joint_positions:
                     hand_grp = obs.create_group("hand_joint_positions")

@@ -68,6 +68,10 @@ quest3_data_recorder:
       gripper_joint_states_topic: /left/franka_gripper/joint_states
       hand_command_topic: /hand_left/joint_commands
       hand_actual_joint_states_topic: /hand_left/joint_states
+      # Quest 侧键原始值取自 /quest3/buttons 的 leftGrip；该话题表示
+      # 左臂摇操最终是否真正启用（错误/恢复期间会强制为 false）。
+      enable_analog_name: leftGrip
+      teleop_enabled_topic: /quest3/left_impedance_teleop/enabled
       wrench_topic: /left/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
 
     right:
@@ -76,4 +80,7 @@ quest3_data_recorder:
       gripper_joint_states_topic: /right/franka_gripper/joint_states
       hand_command_topic: /hand_right/joint_commands
       hand_actual_joint_states_topic: /hand_right/joint_states
+      # Quest 侧键原始值取自 /quest3/buttons 的 rightGrip。
+      enable_analog_name: rightGrip
+      teleop_enabled_topic: /quest3/right_impedance_teleop/enabled
       wrench_topic: /right/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
