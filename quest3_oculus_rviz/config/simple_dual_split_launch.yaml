@@ -43,7 +43,7 @@ franka_stack:
   # 出现 reflex 后是否自动 recover；调试 reflex 原因时建议 false，避免掩盖首次错误。
   auto_recover_after_reflex: true
   # 左臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
-  left_ros2_control_cpu: 2
+  left_ros2_control_cpu: 2-3
   # 左臂 Franka 辅助节点绑定 CPU，例如 robot_state_broadcaster、joint_state 等非主控制任务。
   left_franka_aux_cpu: 4
   # 左臂 HTTP server 绑定 CPU，负责 /getstate、/health 等 HTTP 接口。
@@ -51,7 +51,7 @@ franka_stack:
   # 左臂 reflex watchdog 绑定 CPU，负责监听错误并按配置恢复。
   left_watchdog_cpu: 6
   # 右臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
-  right_ros2_control_cpu: 8
+  right_ros2_control_cpu: 8-9
   # 右臂 Franka 辅助节点绑定 CPU，例如 robot_state_broadcaster、joint_state 等非主控制任务。
   right_franka_aux_cpu: 10
   # 右臂 HTTP server 绑定 CPU，负责 /getstate、/health 等 HTTP 接口。
@@ -87,11 +87,11 @@ policy_inference:
   auto_recover_after_reflex: true
   left_server_port: 5000
   right_server_port: 5001
-  left_ros2_control_cpu: 2
+  left_ros2_control_cpu: 2-3
   left_franka_aux_cpu: 4
   left_http_server_cpu: 6
   left_watchdog_cpu: 6
-  right_ros2_control_cpu: 8
+  right_ros2_control_cpu: 8-9
   right_franka_aux_cpu: 10
   right_http_server_cpu: 12
   right_watchdog_cpu: 12
@@ -181,9 +181,9 @@ all_in_one:
   # 启动后是否自动 activate cartesian_impedance_controller。
   auto_start_impedance: true
   # 出现 reflex 后是否自动 recover；调试 reflex 原因时建议 false。
-  auto_recover_after_reflex: false
+  auto_recover_after_reflex: true
   # 左臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
-  left_ros2_control_cpu: 2
+  left_ros2_control_cpu: 2-3
   # 左臂 Franka 辅助节点绑定 CPU。
   left_franka_aux_cpu: 4
   # 左臂 HTTP server 绑定 CPU。
@@ -191,7 +191,7 @@ all_in_one:
   # 左臂 reflex watchdog 绑定 CPU。
   left_watchdog_cpu: 6
   # 右臂 ros2_control_node 绑定的 CPU，负责实时控制主循环，最关键。
-  right_ros2_control_cpu: 8
+  right_ros2_control_cpu: 8-9
   # 右臂 Franka 辅助节点绑定 CPU。
   right_franka_aux_cpu: 10
   # 右臂 HTTP server 绑定 CPU。
