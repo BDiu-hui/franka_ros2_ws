@@ -17,7 +17,11 @@ from common import spawn_robot_state_publisher, detect_handedness
 def spawn_rviz(context):
     """Spawn RViz node with proper namespace and handedness-specific config."""
     hand_name = LaunchConfiguration("hand_name").perform(context)
-    wuji_description_dir = get_package_share_directory("wuji_description")
+    try:
+        wuji_description_dir = get_package_share_directory("wuji_description")
+    except Exception as e:
+        print(f"Skipping RViz because wuji_description is unavailable: {e}")
+        return []
 
     # Detect handedness from driver node
     hand_type = detect_handedness(hand_name)

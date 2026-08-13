@@ -138,7 +138,7 @@ def generate_launch_description():
             DeclareLaunchArgument("wuji_config_file", default_value=default_wuji_config),
             DeclareLaunchArgument("left_wuji_enabled", default_value="false"),
             DeclareLaunchArgument("right_wuji_enabled", default_value="true"),
-            DeclareLaunchArgument("left_wuji_serial", default_value="3566377E3533"),
+            DeclareLaunchArgument("left_wuji_serial", default_value="348534683533"),
             DeclareLaunchArgument("right_wuji_serial", default_value="3671354F3333"),
             DeclareLaunchArgument("wuji_dry_run", default_value="false"),
             DeclareLaunchArgument("start_data_recorder", default_value="false"),

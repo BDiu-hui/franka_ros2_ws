@@ -85,7 +85,14 @@ def make_robot_state_publisher(hand_type, namespace):
     Returns:
         robot_state_publisher Node, or None if the URDF cannot be read
     """
-    wuji_description_dir = get_package_share_directory("wuji_description")
+    try:
+        wuji_description_dir = get_package_share_directory("wuji_description")
+    except Exception as e:
+        _logger.warning(
+            f"Skipping robot_state_publisher because wuji_description is unavailable: {e}"
+        )
+        return None
+
     urdf_file = os.path.join(wuji_description_dir, "urdf", f"{hand_type}-ros.urdf")
     try:
         with open(urdf_file, "r") as f:

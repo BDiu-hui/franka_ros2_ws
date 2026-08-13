@@ -12,6 +12,10 @@
 # 只启动左右 Franka 控制栈，不启动 Quest reader、摇操和 Wuji。
 # 适合把 1 kHz 机械臂控制和上层 teleop 分成两个 launch 进程时使用。
 franka_stack:
+  # 显式传入源目录配置，避免读取 install/share 里的旧 YAML。
+  config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/simple_dual_impedance_teleop.yaml
+  wuji_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml
+  data_recorder_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/data_recorder.yaml
   # 左臂 Franka FCI IP。
   left_robot_ip: 172.16.0.2
   # 右臂 Franka FCI IP。
@@ -62,6 +66,9 @@ franka_stack:
 # 扩散策略推理专用: 启动左右 Franka、官方 Wuji driver 和 HTTP 策略桥，
 # 不启动 Quest、摇操或数据采集，避免其他节点覆盖策略目标。
 policy_inference:
+  config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/simple_dual_impedance_teleop.yaml
+  wuji_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml
+  data_recorder_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/data_recorder.yaml
   left_robot_ip: 172.16.0.2
   right_robot_ip: 172.16.0.3
   robot_type: fr3
@@ -79,7 +86,7 @@ policy_inference:
   wuji_control_mode: service
   left_wuji_enabled: true
   right_wuji_enabled: true
-  left_wuji_serial: 3566377E3533
+  left_wuji_serial: 348534683533
   right_wuji_serial: 3671354F3333
   wuji_dry_run: false
   wujihand_state_rate: 200.0
@@ -102,6 +109,10 @@ policy_inference:
 # 只启动 Quest reader、左右摇操节点和 Wuji，不重复启动 Franka 控制栈。
 # 使用这个 profile 前，需要先用 franka_stack 把左右 Franka 控制栈启动起来。
 quest_teleop:
+  # 显式传入源目录配置，设置页/源码 YAML 保存后下次启动立即生效。
+  config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/simple_dual_impedance_teleop.yaml
+  wuji_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml
+  data_recorder_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/data_recorder.yaml
   # 不启动左臂控制栈，避免和 franka_stack 重复启动。
   start_left_arm: false
   # 不启动右臂控制栈，避免和 franka_stack 重复启动。
@@ -121,7 +132,7 @@ quest_teleop:
   # 是否启用右 Wuji 手；右手不接或暂时不用时设为 false。
   right_wuji_enabled: true
   # 左 Wuji 手 USB 序列号，用于自动匹配正确串口。
-  left_wuji_serial: 3566377E3533
+  left_wuji_serial: 348534683533
   # 右 Wuji 手 USB 序列号，用于自动匹配正确串口。
   right_wuji_serial: 3671354F3333
   # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
@@ -133,7 +144,7 @@ quest_teleop:
   # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
   require_cameras: true
   # 采集数据输出目录。
-  out_data_dir: "/home/lumos/quest3_recordings"
+  out_data_dir: /home/lumos/quest3_recordings
   # Quest reader 绑定 CPU。
   quest_reader_cpu: 14
   # 左摇操节点绑定 CPU。
@@ -152,6 +163,10 @@ quest_teleop:
 # 一条命令启动全部节点: 左右 Franka 控制栈 + Quest reader + 左右摇操 + Wuji。
 # 这是最方便的入口；如果还出现 reflex 干扰，再改用 franka_stack + quest_teleop 双终端方式隔离。
 all_in_one:
+  # 显式传入源目录配置，避免读取 install/share 里的旧 YAML。
+  config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/simple_dual_impedance_teleop.yaml
+  wuji_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/wuji_trigger_hand.yaml
+  data_recorder_config_file: /home/lumos/franka_ros2_ws/src/quest3_oculus_rviz/config/data_recorder.yaml
   # 左臂 Franka FCI IP。
   left_robot_ip: 172.16.0.2
   # 右臂 Franka FCI IP。
@@ -203,7 +218,7 @@ all_in_one:
   # 是否启用右 Wuji 手。
   right_wuji_enabled: true
   # 左 Wuji 手 USB 序列号，用于自动匹配正确串口。
-  left_wuji_serial: 3566377E3533
+  left_wuji_serial: 348534683533
   # 右 Wuji 手 USB 序列号，用于自动匹配正确串口。
   right_wuji_serial: 3671354F3333
   # true 表示只打印命令不真实发送给 Wuji 硬件，调试用。
@@ -215,7 +230,7 @@ all_in_one:
   # 数据采集时若相机缺失则报错退出；不接相机纯摇操时设为 false。
   require_cameras: true
   # 采集数据输出目录。
-  out_data_dir: "/home/lumos/quest3_recordings"
+  out_data_dir: /home/lumos/quest3_recordings
   # Quest reader 绑定 CPU。
   quest_reader_cpu: 14
   # 左摇操节点绑定 CPU。

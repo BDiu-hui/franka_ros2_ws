@@ -34,9 +34,13 @@ def _spawn_description(node_hand_name, want_rviz):
             actions.append(rsp)
 
         if want_rviz:
-            rviz_config = os.path.join(
-                get_package_share_directory("wuji_description"), "rviz", f"{hand_type}.rviz"
-            )
+            try:
+                rviz_config = os.path.join(
+                    get_package_share_directory("wuji_description"), "rviz", f"{hand_type}.rviz"
+                )
+            except Exception as e:
+                _logger.warning(f"Skipping RViz because wuji_description is unavailable: {e}")
+                return actions
             actions.append(
                 Node(
                     package="rviz2",

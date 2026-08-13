@@ -48,7 +48,7 @@ wuji_trigger_hand:
     # with left_wuji_enabled:=true when the left Wuji hand is connected.
     left_enabled: false
     left_pose_calibrated: true
-    left_serial: 3566377E3533
+    left_serial: 348534683533
     left_command_topic: /hand_left/joint_commands
     left_trigger_value_name: leftTrig
     left_trigger_button_name: LTr

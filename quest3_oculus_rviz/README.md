@@ -297,14 +297,14 @@ HTTP 错误，调用方不会把“已排队”误认为硬件已经接受。
 当前 `config/wuji_trigger_hand.yaml` 已固定左右手序列号:
 
 ```yaml
-left_serial: 3566377E3533
+left_serial: 348534683533
 right_serial: 3671354F3333
 ```
 
 如果临时更换硬件，也可以在 launch 命令里覆盖:
 
 ```bash
-left_wuji_serial:=3566377E3533 \
+left_wuji_serial:=348534683533 \
 right_wuji_serial:=3671354F3333
 ```
 
