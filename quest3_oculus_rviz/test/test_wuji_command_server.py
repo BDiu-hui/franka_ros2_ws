@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -51,6 +52,31 @@ def test_wuji_command_server_health_and_joint_targets() -> None:
         assert status == 200
         assert result == {"ok": True, "side": "left"}
         assert received == [("left", positions)]
+    finally:
+        server.stop()
+
+
+def test_wuji_command_server_returns_actual_joint_positions() -> None:
+    timestamp_ns = time.monotonic_ns()
+    positions = [float(index) / 10.0 for index in range(20)]
+    server = WujiCommandServer(
+        "127.0.0.1",
+        0,
+        lambda _side, _positions: None,
+        lambda: ("left",),
+        lambda side: (positions, timestamp_ns) if side == "left" else None,
+    )
+    server.start()
+    try:
+        status, result = _request_json(
+            f"{server.url}/hands/left/actual_joint_positions"
+        )
+        assert status == 200
+        assert result["ok"] is True
+        assert result["side"] == "left"
+        assert result["positions"] == positions
+        assert result["timestamp_monotonic_ns"] == timestamp_ns
+        assert result["age_ms"] >= 0.0
     finally:
         server.stop()
 

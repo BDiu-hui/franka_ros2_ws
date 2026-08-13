@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+import time
 from collections.abc import Callable, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -11,6 +12,7 @@ from urllib.parse import unquote, urlparse
 
 CommandCallback = Callable[[str, list[float]], None]
 HandsCallback = Callable[[], Sequence[str]]
+ActualStateCallback = Callable[[str], tuple[Sequence[float], int] | None]
 MAX_REQUEST_BYTES = 64 * 1024
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 
@@ -23,9 +25,11 @@ class _WujiHTTPServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         command_callback: CommandCallback,
         hands_callback: HandsCallback,
+        actual_state_callback: ActualStateCallback | None,
     ) -> None:
         self.command_callback = command_callback
         self.hands_callback = hands_callback
+        self.actual_state_callback = actual_state_callback
         super().__init__(server_address, _WujiRequestHandler)
 
 
@@ -33,14 +37,65 @@ class _WujiRequestHandler(BaseHTTPRequestHandler):
     server: _WujiHTTPServer
 
     def do_GET(self) -> None:
-        if urlparse(self.path).path != "/health":
+        path = urlparse(self.path).path
+        if path == "/health":
+            self._write_json(
+                200,
+                {
+                    "ok": True,
+                    "hands": sorted(
+                        str(side) for side in self.server.hands_callback()
+                    ),
+                },
+            )
+            return
+
+        parts = [unquote(part) for part in path.split("/") if part]
+        if (
+            len(parts) != 3
+            or parts[0] != "hands"
+            or parts[2] != "actual_joint_positions"
+        ):
             self._write_json(404, {"ok": False, "error": "not found"})
             return
+
+        side = parts[1]
+        if side not in self.server.hands_callback():
+            self._write_json(404, {"ok": False, "error": f"unknown hand {side!r}"})
+            return
+        callback = self.server.actual_state_callback
+        if callback is None:
+            self._write_json(503, {"ok": False, "error": "actual state unavailable"})
+            return
+        try:
+            state = callback(side)
+            if state is None:
+                raise RuntimeError(f"no actual state received for hand {side!r}")
+            raw_positions, timestamp_ns = state
+            positions = [float(value) for value in raw_positions]
+            timestamp_ns = int(timestamp_ns)
+            if len(positions) != 20:
+                raise ValueError("actual positions must contain exactly 20 values")
+            if not all(math.isfinite(value) for value in positions):
+                raise ValueError("actual positions contains a non-finite value")
+            if timestamp_ns <= 0:
+                raise ValueError("actual state timestamp must be positive")
+            age_ms = max(0.0, (time.monotonic_ns() - timestamp_ns) / 1_000_000.0)
+        except KeyError as exc:
+            self._write_json(404, {"ok": False, "error": str(exc)})
+            return
+        except (RuntimeError, TypeError, ValueError) as exc:
+            self._write_json(503, {"ok": False, "error": str(exc)})
+            return
+
         self._write_json(
             200,
             {
                 "ok": True,
-                "hands": sorted(str(side) for side in self.server.hands_callback()),
+                "side": side,
+                "positions": positions,
+                "timestamp_monotonic_ns": timestamp_ns,
+                "age_ms": age_ms,
             },
         )
 
@@ -102,6 +157,7 @@ class WujiCommandServer:
         port: int,
         command_callback: CommandCallback,
         hands_callback: HandsCallback,
+        actual_state_callback: ActualStateCallback | None = None,
     ) -> None:
         host = str(host).strip().lower()
         if host not in LOOPBACK_HOSTS:
@@ -114,6 +170,7 @@ class WujiCommandServer:
             (host, int(port)),
             command_callback,
             hands_callback,
+            actual_state_callback,
         )
         self._thread: threading.Thread | None = None
 

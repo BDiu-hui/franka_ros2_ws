@@ -70,6 +70,12 @@ def test_service_mode_controls_two_dry_run_hands() -> None:
         )
         assert result == {"ok": True, "side": "left"}
         assert node.workers["left"].last_target_positions() == positions
+
+        actual = _get_json(
+            f"{node.command_server.url}/hands/left/actual_joint_positions"
+        )
+        assert actual["positions"] == [0.0] * 20
+        assert actual["timestamp_monotonic_ns"] > 0
     finally:
         node.destroy_node()
         if rclpy.ok():

@@ -519,6 +519,9 @@ class WujiTriggerHandNode(Node):
         self.hand_closed: dict[str, bool] = {}
         self.joint_state_publishers: dict[str, Any] = {}
         self.actual_joint_state_publishers: dict[str, Any] = {}
+        self._http_actual_state_lock = threading.Lock()
+        self._http_actual_states: dict[str, tuple[list[float], int]] = {}
+        self._http_actual_state_subscriptions: list[Any] = []
         self.last_buttons_time: float | None = None
         self.timeout_release_active = False
         self._destroying = False
@@ -584,11 +587,24 @@ class WujiTriggerHandNode(Node):
             )
         else:
             try:
+                if self.control_backend == "ros2":
+                    for side in self.workers:
+                        self._http_actual_state_subscriptions.append(
+                            self.create_subscription(
+                                JointState,
+                                f"/hand_{side}/joint_states",
+                                lambda msg, hand_side=side: self._cache_http_actual_state(
+                                    hand_side, msg
+                                ),
+                                qos_profile_sensor_data,
+                            )
+                        )
                 self.command_server = WujiCommandServer(
                     self.command_server_host,
                     self.command_server_port,
                     self._write_service_joint_targets,
                     self._service_ready_hands,
+                    self._service_actual_state,
                 )
                 self.command_server.start()
             except Exception:
@@ -665,6 +681,30 @@ class WujiTriggerHandNode(Node):
                 continue
             ready.append(side)
         return tuple(ready)
+
+    def _service_actual_state(self, side: str) -> tuple[list[float], int]:
+        worker = self.workers.get(side)
+        if worker is None:
+            raise KeyError(f"unknown hand {side!r}")
+        if self.control_backend == "ros2":
+            with self._http_actual_state_lock:
+                state = self._http_actual_states.get(side)
+                if state is None:
+                    raise RuntimeError(
+                        f"no actual joint state received for hand {side!r}"
+                    )
+                positions, timestamp_ns = state
+                return list(positions), timestamp_ns
+        positions = worker.read_actual_positions(self.joint_state_read_timeout_sec)
+        return positions, time.monotonic_ns()
+
+    def _cache_http_actual_state(self, side: str, msg: JointState) -> None:
+        positions = flatten_joint_positions(
+            msg.position,
+            f"{side}_http_actual_joint_state",
+        )
+        with self._http_actual_state_lock:
+            self._http_actual_states[side] = (positions, time.monotonic_ns())
 
     def _load_hand_config(self, side: str) -> HandConfig | None:
         if not bool(self.get_parameter(f"{side}_enabled").value):
