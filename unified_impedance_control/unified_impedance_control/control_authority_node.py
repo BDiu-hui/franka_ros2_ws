@@ -60,25 +60,33 @@ class AuthorityState:
         takeover_button: str,
         start_button: str,
         stop_button: str,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         values = {
             takeover_button: button_pressed(buttons.get(takeover_button, 0.0)),
             start_button: button_pressed(buttons.get(start_button, 0.0)),
             stop_button: button_pressed(buttons.get(stop_button, 0.0)),
         }
         switched = False
+        blocked = False
         with self.lock:
             if values[takeover_button] and not self._previous_buttons.get(takeover_button, False):
-                self.teleop_active = not self.teleop_active
-                self.switch_count += 1
-                self.last_switch_monotonic = time.monotonic()
-                switched = True
-            if values[start_button] and not self._previous_buttons.get(start_button, False):
+                if self.teleop_active and self.recording:
+                    blocked = True
+                else:
+                    self.teleop_active = not self.teleop_active
+                    self.switch_count += 1
+                    self.last_switch_monotonic = time.monotonic()
+                    switched = True
+            if (
+                self.teleop_active
+                and values[start_button]
+                and not self._previous_buttons.get(start_button, False)
+            ):
                 self.recording = True
             if values[stop_button] and not self._previous_buttons.get(stop_button, False):
                 self.recording = False
             self._previous_buttons.update(values)
-        return switched
+        return switched, blocked
 
     def set_episode_saved(self, path: str) -> None:
         with self.lock:
@@ -191,6 +199,35 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             )
             return
         parts = [part for part in path.split("/") if part]
+        if (
+            self.command == "GET"
+            and len(parts) == 3
+            and parts[0] == "hands"
+            and parts[2] == "actual_joint_positions"
+        ):
+            side = parts[1]
+            try:
+                positions, timestamp_ns = self.server.node.actual_hand_state(side)
+            except KeyError as exc:
+                self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": str(exc)})
+                return
+            except RuntimeError as exc:
+                self._write_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"ok": False, "error": str(exc)},
+                )
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "side": side,
+                    "positions": positions,
+                    "timestamp_monotonic_ns": timestamp_ns,
+                    "age_ms": max(0.0, (time.monotonic_ns() - timestamp_ns) / 1_000_000.0),
+                },
+            )
+            return
         if self.command != "POST" or len(parts) != 3 or parts[0] != "hands" or parts[2] != "joint_targets":
             self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
@@ -274,6 +311,8 @@ class ControlAuthorityNode(Node):
             "right_teleop_hand_topic": "/unified_impedance/teleop/hand_right/joint_commands",
             "left_output_hand_topic": "/hand_left/joint_commands",
             "right_output_hand_topic": "/hand_right/joint_commands",
+            "left_actual_hand_topic": "/hand_left/joint_states",
+            "right_actual_hand_topic": "/hand_right/joint_states",
             "left_gateway_host": "127.0.0.1",
             "left_gateway_port": 5000,
             "left_backend_url": "http://127.0.0.1:5100",
@@ -324,6 +363,8 @@ class ControlAuthorityNode(Node):
                 qos_profile_sensor_data,
             ),
         }
+        self._actual_hand_state_lock = threading.Lock()
+        self._actual_hand_states: dict[str, tuple[list[float], int]] = {}
         self.teleop_enabled_publishers = {
             "left": self.create_publisher(
                 Bool, str(self.get_parameter("left_output_enabled_topic").value), 10
@@ -349,6 +390,12 @@ class ControlAuthorityNode(Node):
                 JointState,
                 str(self.get_parameter(f"{side}_teleop_hand_topic").value),
                 lambda msg, arm=side: self._relay_teleop_hand(arm, msg),
+                qos_profile_sensor_data,
+            )
+            self.create_subscription(
+                JointState,
+                str(self.get_parameter(f"{side}_actual_hand_topic").value),
+                lambda msg, arm=side: self._cache_actual_hand_state(arm, msg),
                 qos_profile_sensor_data,
             )
         self.buttons_sub = self.create_subscription(
@@ -418,7 +465,7 @@ class ControlAuthorityNode(Node):
             return
         if not isinstance(buttons, dict):
             return
-        switched = self.state.update_buttons(
+        switched, blocked = self.state.update_buttons(
             buttons,
             takeover_button=str(self.get_parameter("takeover_button").value),
             start_button=str(self.get_parameter("record_start_button").value),
@@ -428,6 +475,10 @@ class ControlAuthorityNode(Node):
             self._publish_authority()
             self.get_logger().warn(
                 f"Control authority changed to {self.state.snapshot()['authority']} by Y button"
+            )
+        elif blocked:
+            self.get_logger().warn(
+                "Y ignored while recording; press B to stop and save, then press Y again"
             )
         if self.state.is_teleop():
             self.teleop_buttons_pub.publish(msg)
@@ -522,6 +573,25 @@ class ControlAuthorityNode(Node):
             for side, publisher in self.hand_publishers.items()
             if publisher.get_subscription_count() > 0
         ]
+
+    def _cache_actual_hand_state(self, side: str, msg: JointState) -> None:
+        positions = [float(value) for value in msg.position]
+        if len(positions) != HAND_JOINT_COUNT or not all(
+            math.isfinite(value) for value in positions
+        ):
+            return
+        with self._actual_hand_state_lock:
+            self._actual_hand_states[side] = (positions, time.monotonic_ns())
+
+    def actual_hand_state(self, side: str) -> tuple[list[float], int]:
+        if side not in self.hand_publishers:
+            raise KeyError(f"unknown hand {side!r}")
+        with self._actual_hand_state_lock:
+            state = self._actual_hand_states.get(side)
+            if state is None:
+                raise RuntimeError(f"no actual joint state received for hand {side!r}")
+            positions, timestamp_ns = state
+            return list(positions), timestamp_ns
 
     def status_payload(self) -> dict[str, Any]:
         return {**self.state.snapshot(), "wuji_ready_hands": self.ready_hands()}

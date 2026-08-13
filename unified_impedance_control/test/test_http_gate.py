@@ -3,6 +3,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import rclpy
+from sensor_msgs.msg import JointState
 
 from unified_impedance_control.control_authority_node import ControlAuthorityNode
 
@@ -20,6 +21,11 @@ def _post_expect_conflict(url: str, payload: dict) -> dict:
         assert exc.code == 409
         return json.loads(exc.read())
     raise AssertionError("request was not rejected")
+
+
+def _get_json(url: str) -> dict:
+    with urlopen(url, timeout=1.0) as response:
+        return json.loads(response.read())
 
 
 def test_teleop_authority_rejects_policy_arm_and_wuji_commands() -> None:
@@ -44,9 +50,16 @@ def test_teleop_authority_rejects_policy_arm_and_wuji_commands() -> None:
             f"http://127.0.0.1:{wuji_port}/hands/left/joint_targets",
             {"positions": [0.0] * 20},
         )
+        actual_msg = JointState()
+        actual_msg.position = [float(index) / 10.0 for index in range(20)]
+        node._cache_actual_hand_state("left", actual_msg)  # pylint: disable=protected-access
+        actual = _get_json(
+            f"http://127.0.0.1:{wuji_port}/hands/left/actual_joint_positions"
+        )
         assert arm["ok"] is False
         assert hand["ok"] is False
+        assert actual["positions"] == list(actual_msg.position)
+        assert actual["age_ms"] >= 0.0
     finally:
         node.destroy_node()
         rclpy.shutdown()
-

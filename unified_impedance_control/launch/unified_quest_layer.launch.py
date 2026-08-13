@@ -112,11 +112,11 @@ def generate_launch_description():
                     },
                 ],
             ),
-            # This is the original recorder executable and original YAML. Its
-            # A/B/X behavior, subscribed topics, and HDF5 schema are untouched.
+            # This subclasses the original recorder and changes only camera
+            # ownership. A/B/X, subscribed data, and HDF5 writing are reused.
             Node(
-                package="quest3_oculus_rviz",
-                executable="data_recorder_node",
+                package="unified_impedance_control",
+                executable="authority_data_recorder_node",
                 name="quest3_data_recorder",
                 output="screen",
                 prefix=_taskset_prefix(LaunchConfiguration("data_recorder_cpu")),

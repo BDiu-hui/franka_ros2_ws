@@ -24,7 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "control_authority_node = unified_impedance_control.control_authority_node:main",
+            "authority_data_recorder_node = unified_impedance_control.authority_data_recorder_node:main",
         ],
     },
 )
-
