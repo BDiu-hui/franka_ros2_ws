@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
 import threading
 import time
 from http import HTTPStatus
@@ -14,6 +15,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import rclpy
+from geometry_msgs.msg import PoseStamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
@@ -299,6 +301,8 @@ class ControlAuthorityNode(Node):
             "takeover_button": "Y",
             "record_start_button": "A",
             "record_stop_button": "B",
+            "voice_prompts_enabled": True,
+            "voice_command": "/usr/bin/spd-say",
             "left_teleop_pose_topic": "/unified_impedance/teleop/left/equilibrium_pose",
             "right_teleop_pose_topic": "/unified_impedance/teleop/right/equilibrium_pose",
             "left_output_pose_topic": "/left/cartesian_impedance_controller/equilibrium_pose",
@@ -307,6 +311,9 @@ class ControlAuthorityNode(Node):
             "right_teleop_enabled_topic": "/unified_impedance/teleop/right/enabled",
             "left_output_enabled_topic": "/quest3/left_impedance_teleop/enabled",
             "right_output_enabled_topic": "/quest3/right_impedance_teleop/enabled",
+            "left_current_pose_topic": "/left/franka_robot_state_broadcaster/current_pose",
+            "right_current_pose_topic": "/right/franka_robot_state_broadcaster/current_pose",
+            "handoff_current_pose_timeout_sec": 0.25,
             "left_teleop_hand_topic": "/unified_impedance/teleop/hand_left/joint_commands",
             "right_teleop_hand_topic": "/unified_impedance/teleop/hand_right/joint_commands",
             "left_output_hand_topic": "/hand_left/joint_commands",
@@ -373,6 +380,10 @@ class ControlAuthorityNode(Node):
                 Bool, str(self.get_parameter("right_output_enabled_topic").value), 10
             ),
         }
+        self._current_arm_poses: dict[str, tuple[list[float], float]] = {}
+        self._handoff_pending = {"left": False, "right": False}
+        self._handoff_saw_grip_released = {"left": False, "right": False}
+        self._teleop_pose_after_ns = {"left": 0, "right": 0}
         for side in ("left", "right"):
             self.create_subscription(
                 CartesianImpedanceCommand,
@@ -385,6 +396,12 @@ class ControlAuthorityNode(Node):
                 str(self.get_parameter(f"{side}_teleop_enabled_topic").value),
                 lambda msg, arm=side: self._relay_teleop_enabled(arm, msg),
                 10,
+            )
+            self.create_subscription(
+                PoseStamped,
+                str(self.get_parameter(f"{side}_current_pose_topic").value),
+                lambda msg, arm=side: self._cache_current_arm_pose(arm, msg),
+                qos_profile_sensor_data,
             )
             self.create_subscription(
                 JointState,
@@ -472,7 +489,12 @@ class ControlAuthorityNode(Node):
             stop_button=str(self.get_parameter("record_stop_button").value),
         )
         if switched:
+            if self.state.is_teleop():
+                self._begin_teleop_handoff()
+            else:
+                self._clear_teleop_handoff()
             self._publish_authority()
+            self._speak_authority(self.state.snapshot()["authority"])
             self.get_logger().warn(
                 f"Control authority changed to {self.state.snapshot()['authority']} by Y button"
             )
@@ -482,6 +504,26 @@ class ControlAuthorityNode(Node):
             )
         if self.state.is_teleop():
             self.teleop_buttons_pub.publish(msg)
+
+    def _speak_authority(self, authority: str) -> None:
+        if not bool(self.get_parameter("voice_prompts_enabled").value):
+            return
+        phrase = {
+            "teleop": "Teleoperation control",
+            "inference": "Inference control",
+        }.get(authority)
+        command = str(self.get_parameter("voice_command").value).strip()
+        if not phrase or not command:
+            return
+        try:
+            subprocess.Popen(
+                [command, phrase],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            self.get_logger().warn(f"Authority voice prompt failed: {exc}")
 
     def _episode_saved_callback(self, msg: String) -> None:
         self.state.set_episode_saved(msg.data)
@@ -501,6 +543,9 @@ class ControlAuthorityNode(Node):
                 publisher.publish(disabled)
 
     def _relay_teleop_pose(self, side: str, msg: CartesianImpedanceCommand) -> None:
+        stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        if self._handoff_pending[side] or stamp_ns <= self._teleop_pose_after_ns[side]:
+            return
         self.state.run_when(
             teleop=True,
             callback=lambda: self.pose_publishers[side].publish(msg),
@@ -513,10 +558,77 @@ class ControlAuthorityNode(Node):
         )
 
     def _relay_teleop_enabled(self, side: str, msg: Bool) -> None:
+        if not self.state.is_teleop():
+            return
+        if self._handoff_pending[side]:
+            if not msg.data:
+                self._handoff_saw_grip_released[side] = True
+            elif self._handoff_saw_grip_released[side]:
+                self._handoff_pending[side] = False
+                self._teleop_pose_after_ns[side] = self.get_clock().now().nanoseconds
+                self.get_logger().info(
+                    f"{side} teleop handoff armed from a fresh Grip anchor"
+                )
+            else:
+                return
         self.state.run_when(
             teleop=True,
             callback=lambda: self.teleop_enabled_publishers[side].publish(msg),
         )
+
+    def _cache_current_arm_pose(self, side: str, msg: PoseStamped) -> None:
+        values = [
+            float(msg.pose.position.x),
+            float(msg.pose.position.y),
+            float(msg.pose.position.z),
+            float(msg.pose.orientation.x),
+            float(msg.pose.orientation.y),
+            float(msg.pose.orientation.z),
+            float(msg.pose.orientation.w),
+        ]
+        if all(math.isfinite(value) for value in values):
+            self._current_arm_poses[side] = (values, time.monotonic())
+
+    def _begin_teleop_handoff(self) -> None:
+        disabled = Bool()
+        disabled.data = False
+        timeout = float(self.get_parameter("handoff_current_pose_timeout_sec").value)
+        held: list[str] = []
+        for side in ("left", "right"):
+            self._handoff_pending[side] = True
+            self._handoff_saw_grip_released[side] = False
+            self._teleop_pose_after_ns[side] = self.get_clock().now().nanoseconds
+            self.teleop_enabled_publishers[side].publish(disabled)
+            cached = self._current_arm_poses.get(side)
+            if cached is None or time.monotonic() - cached[1] > timeout:
+                self.get_logger().warn(
+                    f"{side} teleop handoff has no fresh current pose; keeping old commands blocked"
+                )
+                continue
+            values = cached[0]
+            hold = CartesianImpedanceCommand()
+            hold.header.stamp = self.get_clock().now().to_msg()
+            hold.header.frame_id = "base"
+            hold.pose.position.x, hold.pose.position.y, hold.pose.position.z = values[:3]
+            (
+                hold.pose.orientation.x,
+                hold.pose.orientation.y,
+                hold.pose.orientation.z,
+                hold.pose.orientation.w,
+            ) = values[3:]
+            hold.has_master_q = False
+            self.pose_publishers[side].publish(hold)
+            held.append(side)
+        self.get_logger().info(
+            "Teleop handoff pending: holding current pose for "
+            f"{held}; release and press each Grip to arm motion"
+        )
+
+    def _clear_teleop_handoff(self) -> None:
+        for side in ("left", "right"):
+            self._handoff_pending[side] = False
+            self._handoff_saw_grip_released[side] = False
+            self._teleop_pose_after_ns[side] = 0
 
     def publish_policy_pose(self, side: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         if side not in self.pose_publishers:
@@ -594,7 +706,13 @@ class ControlAuthorityNode(Node):
             return list(positions), timestamp_ns
 
     def status_payload(self) -> dict[str, Any]:
-        return {**self.state.snapshot(), "wuji_ready_hands": self.ready_hands()}
+        return {
+            **self.state.snapshot(),
+            "wuji_ready_hands": self.ready_hands(),
+            "teleop_pose_pending": [
+                side for side, pending in self._handoff_pending.items() if pending
+            ],
+        }
 
     def destroy_node(self) -> bool:
         for server in getattr(self, "_servers", []):
