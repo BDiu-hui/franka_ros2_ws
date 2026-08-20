@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FKViewer</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-page="launcher">
+  <header>
+    <div class="brand">
+      <div class="logo">FK</div>
+      <div>
+        <h1>FKViewer</h1>
+        <div class="sub">Franka 任务操作台</div>
+      </div>
+    </div>
+    <div class="topline">
+      <span class="chip warn" id="live-chip"><span class="dot"></span>仿真模式</span>
+      <span class="chip" id="refresh-chip"><span class="dot"></span>正在连接</span>
+      <button class="mini hidden" id="frame-settings-button" data-frame-settings title="打开当前模块设置">设置</button>
+      <button class="mini" data-toggle-sidebar title="显示或隐藏模块导航">隐藏侧栏</button>
+      <button class="mini" data-refresh title="立即刷新设备与进程状态">刷新</button>
+    </div>
+  </header>
+
+  <main class="embedded-shell">
+    <aside class="module-sidebar" id="module-sidebar">
+      <div class="sidebar-head">
+        <span>控制模块</span>
+        <small>单页切换</small>
+      </div>
+      <button class="module-nav active" data-load-module="impedance">
+        <b>01</b>
+        <span>阻抗控制</span>
+        <small>Franka 控制栈</small>
+      </button>
+      <button class="module-nav" data-load-module="hand">
+        <b>02</b>
+        <span>灵巧手控制</span>
+        <small>Wuji 手驱动</small>
+      </button>
+      <button class="module-nav" data-load-module="inference">
+        <b>03</b>
+        <span>推理控制</span>
+        <small>EasyDP 策略</small>
+      </button>
+      <button class="module-nav" data-load-module="teleop">
+        <b>04</b>
+        <span>摇操控制</span>
+        <small>Quest 双臂</small>
+      </button>
+      <button class="module-nav" data-load-module="unified">
+        <b>05</b>
+        <span>统一控制</span>
+        <small>推理 / 摇操仲裁</small>
+      </button>
+    </aside>
+
+    <div class="sidebar-resizer" id="sidebar-resizer" role="separator" aria-label="调整侧栏宽度" aria-orientation="vertical" tabindex="0"></div>
+
+    <section class="embedded-content">
+      <div class="module-frame-head">
+        <div>
+          <h2 id="active-module-title">阻抗控制</h2>
+          <p id="active-module-subtitle">Franka 控制栈状态与参数操作</p>
+        </div>
+        <button class="mini hidden" id="frame-settings-inline" data-frame-settings>摇操设置</button>
+      </div>
+      <div class="module-viewport">
+        <div class="frame-loading" id="frame-loading" aria-live="polite">
+          <span class="spinner"></span>
+          <span>正在加载模块...</span>
+        </div>
+        <iframe id="module-frame" title="FKViewer 控制模块"></iframe>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-statusbar" aria-live="polite">
+    <span class="statusbar-item" id="connection-status"><span class="dot"></span>服务器连接中</span>
+    <span class="statusbar-message" id="app-status-message">正在初始化控制台</span>
+    <span class="statusbar-item" id="active-module-status">阻抗控制</span>
+  </footer>
+
+  <div class="toast-stack" id="toast-stack" aria-live="assertive"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

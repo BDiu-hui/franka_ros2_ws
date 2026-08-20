@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FKViewer Window</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-page="module-window">
+  <header>
+    <div class="brand">
+      <div class="logo">FK</div>
+      <div>
+        <h1 id="window-title">FKViewer</h1>
+        <div class="sub" id="window-subtitle">module window</div>
+      </div>
+    </div>
+    <div class="topline">
+      <span class="chip warn" id="live-chip"><span class="dot"></span>仿真模式</span>
+      <span class="chip" id="refresh-chip"><span class="dot"></span>正在连接</span>
+      <button class="mini hidden" id="settings-button" data-settings title="打开参数设置">设置</button>
+      <button class="mini" data-refresh title="立即刷新状态">刷新</button>
+    </div>
+  </header>
+
+  <div class="operation-bar" id="operation-bar" data-state="idle" aria-live="polite">
+    <span class="operation-indicator"><span class="dot"></span><span id="operation-state">就绪</span></span>
+    <span class="operation-message" id="operation-message">请选择需要执行的操作</span>
+    <button class="mini hidden" id="operation-dismiss" data-dismiss-operation>关闭</button>
+  </div>
+
+  <main class="window-main">
+    <section class="panel" id="config-panel">
+      <div class="panel-head">
+        <div>
+          <h2>运行配置</h2>
+          <p id="config-root">--</p>
+        </div>
+      </div>
+      <div id="config-form" class="config-form"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>操作</h2>
+          <p id="action-safety-note">仿真模式下只预览命令，不会操作真机</p>
+        </div>
+      </div>
+      <div id="action-area" class="stack-actions"></div>
+    </section>
+
+    <section class="panel span-2">
+      <div class="panel-head">
+        <div>
+          <h2>设备与进程状态</h2>
+          <p id="status-subtitle">实时探测</p>
+        </div>
+      </div>
+      <div id="module-status"></div>
+    </section>
+
+    <section class="panel span-2 hidden" id="runtime-log-panel">
+      <div class="panel-head">
+        <div>
+          <h2>运行日志</h2>
+          <p>FKViewer 启动的进程输出，可拖动右下角调整高度</p>
+        </div>
+      </div>
+      <div class="runtime-log-grid">
+        <div class="runtime-log-card">
+          <div class="runtime-log-head">
+            <h3 id="runtime-log-arm-title">机械臂日志</h3>
+            <button class="mini" data-log-follow="arm" title="暂停或继续自动跟随最新日志">暂停跟随</button>
+          </div>
+          <pre class="runtime-log" id="runtime-log-arm"></pre>
+        </div>
+        <div class="runtime-log-card">
+          <div class="runtime-log-head">
+            <h3 id="runtime-log-hand-title">手柄日志</h3>
+            <button class="mini" data-log-follow="hand" title="暂停或继续自动跟随最新日志">暂停跟随</button>
+          </div>
+          <pre class="runtime-log" id="runtime-log-hand"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel span-2">
+      <div class="panel-head">
+        <div>
+          <h2>操作记录</h2>
+          <p>本次服务运行期间的最近操作</p>
+        </div>
+      </div>
+      <div class="log" id="event-log"></div>
+    </section>
+  </main>
+
+  <div class="modal hidden" id="settings-modal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2 id="settings-title">参数设置</h2>
+          <p id="settings-path">--</p>
+        </div>
+        <button class="mini" data-close-settings>关闭</button>
+      </div>
+      <div class="settings-note">
+        保存会写入源目录 YAML。已经运行中的 ROS launch 不会自动重载参数，需要先停止对应程序，再重新启动。
+      </div>
+      <div class="settings-grid" id="settings-form"></div>
+      <div class="modal-actions">
+        <button data-close-settings>取消</button>
+        <button class="primary" data-save-settings>保存设置</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal hidden" id="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <div class="confirm-card">
+      <div class="confirm-icon">!</div>
+      <div>
+        <h2 id="confirm-title">确认操作</h2>
+        <p id="confirm-message">请确认是否继续。</p>
+      </div>
+      <div class="modal-actions">
+        <button data-confirm-cancel>取消</button>
+        <button class="danger" id="confirm-submit" data-confirm-submit>确认</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast-stack" id="toast-stack" aria-live="assertive"></div>
+  <script src="/static/window.js"></script>
+</body>
+</html>
