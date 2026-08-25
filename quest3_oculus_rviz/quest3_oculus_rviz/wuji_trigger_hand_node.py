@@ -360,6 +360,7 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("release_threshold", 0.35)
         self.declare_parameter("buttons_timeout_sec", 0.5)
         self.declare_parameter("watchdog_rate_hz", 10.0)
+        self.declare_parameter("keep_status", False)
         self.declare_parameter("release_on_startup", True)
         self.declare_parameter("release_on_timeout", True)
         self.declare_parameter("release_on_shutdown", True)
@@ -415,6 +416,7 @@ class WujiTriggerHandNode(Node):
             float(self.get_parameter("watchdog_rate_hz").value),
             1.0,
         )
+        self.keep_status = bool(self.get_parameter("keep_status").value)
         self.release_on_startup = bool(
             self.get_parameter("release_on_startup").value
         )
@@ -544,7 +546,7 @@ class WujiTriggerHandNode(Node):
                 self.trigger_pressed[config.side] = False
                 self.hand_closed[config.side] = False
                 worker.write_enabled(True)
-                if self.release_on_startup:
+                if self.release_on_startup and not self.keep_status:
                     if self.control_mode == CONTROL_MODE_SERVICE:
                         worker.write_pose_sync(config.released_pose)
                     else:
@@ -569,7 +571,10 @@ class WujiTriggerHandNode(Node):
                         self.create_publisher(JointState, actual_topic, 10)
                     )
         except Exception:
-            self._cleanup_hands(release=True, disable=True)
+            self._cleanup_hands(
+                release=not self.keep_status,
+                disable=True,
+            )
             raise
 
         self.buttons_sub = None
@@ -608,7 +613,10 @@ class WujiTriggerHandNode(Node):
                 )
                 self.command_server.start()
             except Exception:
-                self._cleanup_hands(release=True, disable=True)
+                self._cleanup_hands(
+                    release=not self.keep_status,
+                    disable=True,
+                )
                 raise
         self.joint_state_timer = None
         if self.publish_joint_states:
@@ -646,6 +654,7 @@ class WujiTriggerHandNode(Node):
             f"actual_joint_state_rate={self.actual_joint_state_rate_hz:.1f}Hz, "
             f"skip_actual_read_while_commanding="
             f"{self.skip_actual_read_while_commanding}, "
+            f"keep_status={self.keep_status}, "
             f"control_mode={self.control_mode}, "
             f"command_server="
             f"{None if self.command_server is None else self.command_server.url}"
@@ -1027,7 +1036,7 @@ class WujiTriggerHandNode(Node):
                     "within 2 seconds."
                 )
         self._cleanup_hands(
-            release=self.release_on_shutdown,
+            release=self.release_on_shutdown and not self.keep_status,
             disable=self.disable_on_shutdown,
             release_hold_sec=self.shutdown_release_hold,
         )

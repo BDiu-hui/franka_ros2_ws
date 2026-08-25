@@ -498,6 +498,7 @@ def command_catalog(config: dict[str, Any], selections: dict[str, Any] | None = 
     teleop_profile_file = str(selections.get("profile_file") or config["profile_file"])
     teleop_profile = str(selections.get("profile") or "quest_teleop")
     teleop_launch = Path(str(selections.get("teleop_launch") or "simple_dual_profile.launch.py")).name
+    keep_status = bool_choice(selections, "keep_status", False)
     impedance_launch = Path(str(selections.get("impedance_launch") or "http_control.launch.py")).name
     hand_launch = Path(str(selections.get("hand_launch") or "wujihand_dual.launch.py")).name
     hand_launch_args: list[str] = []
@@ -538,6 +539,7 @@ def command_catalog(config: dict[str, Any], selections: dict[str, Any] | None = 
     dual_profile_prefix = (
         f"{setup} && ros2 launch quest3_oculus_rviz simple_dual_profile.launch.py "
         f"{ros_arg('profile_file', teleop_profile_file)} "
+        f"{ros_arg('wuji_keep_status', keep_status)} "
     )
     single_base_args = " ".join(
         [

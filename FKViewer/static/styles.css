@@ -604,6 +604,20 @@ select {
   margin-top: 2px;
   font: 11px var(--mono);
 }
+.teleop-keep-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.teleop-keep-status input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--blue);
+}
 .teleop-main-button {
   min-height: 72px;
   font-size: 16px;

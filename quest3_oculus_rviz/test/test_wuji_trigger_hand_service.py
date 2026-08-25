@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request, urlopen
@@ -12,6 +13,28 @@ from quest3_oculus_rviz.wuji_trigger_hand_node import (
     Ros2CommandHand,
     WujiTriggerHandNode,
 )
+
+
+class _RecordingHand:
+    def __init__(self) -> None:
+        self.enabled: list[bool] = []
+        self.targets: list[list[list[float]]] = []
+
+    def disable_thread_safe_check(self) -> None:
+        pass
+
+    def write_joint_enabled(self, enabled: bool) -> None:
+        self.enabled.append(enabled)
+
+    def write_joint_target_position_unchecked(
+        self,
+        positions: list[list[float]],
+    ) -> None:
+        self.targets.append([list(finger) for finger in positions])
+
+    def read_joint_actual_position(self, timeout_sec: float) -> list[list[float]]:
+        del timeout_sec
+        return [[0.0] * 4 for _ in range(5)]
 
 
 def _get_json(url: str) -> dict:
@@ -41,6 +64,8 @@ def test_service_mode_controls_two_dry_run_hands() -> None:
             "dry_run:=true",
             "-p",
             "control_mode:=service",
+            "-p",
+            "control_backend:=sdk",
             "-p",
             "left_enabled:=true",
             "-p",
@@ -106,6 +131,91 @@ def test_trigger_mode_keeps_quest_subscription_and_watchdog() -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+
+def test_default_mode_releases_on_startup_and_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = (
+        Path(__file__).resolve().parents[1] / "config" / "wuji_trigger_hand.yaml"
+    )
+    hand = _RecordingHand()
+    monkeypatch.setattr(
+        WujiTriggerHandNode,
+        "_connect_hand",
+        lambda _node, _config: hand,
+    )
+    rclpy.init(
+        args=[
+            "--ros-args",
+            "--params-file",
+            str(config_path),
+            "-p",
+            "control_mode:=service",
+            "-p",
+            "publish_joint_states:=false",
+            "-p",
+            "command_server_port:=0",
+            "-p",
+            "shutdown_release_hold_sec:=0.0",
+        ]
+    )
+    node = WujiTriggerHandNode()
+    try:
+        assert len(hand.targets) == 1
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    assert len(hand.targets) == 2
+    assert hand.enabled == [True, False]
+
+
+def test_keep_status_suppresses_switch_releases_but_not_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = (
+        Path(__file__).resolve().parents[1] / "config" / "wuji_trigger_hand.yaml"
+    )
+    hand = _RecordingHand()
+    monkeypatch.setattr(
+        WujiTriggerHandNode,
+        "_connect_hand",
+        lambda _node, _config: hand,
+    )
+    rclpy.init(
+        args=[
+            "--ros-args",
+            "--params-file",
+            str(config_path),
+            "-p",
+            "keep_status:=true",
+            "-p",
+            "publish_joint_states:=false",
+            "-p",
+            "shutdown_release_hold_sec:=0.0",
+        ]
+    )
+    node = WujiTriggerHandNode()
+    timeout_requests: list[str] = []
+    try:
+        assert hand.targets == []
+        worker = node.workers["right"]
+        worker.request_pose = lambda name, _pose: timeout_requests.append(name)
+        node.hand_closed["right"] = True
+        node.last_buttons_time = time.monotonic() - 1.0
+
+        node.watchdog_callback()
+
+        assert timeout_requests == ["released_timeout"]
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    assert hand.targets == []
+    assert hand.enabled == [True, False]
 
 
 def test_ros2_hand_readiness_requires_driver_subscription() -> None:

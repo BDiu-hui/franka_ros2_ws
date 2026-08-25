@@ -283,7 +283,9 @@ curl http://127.0.0.1:8765/health
 健康响应必须同时包含 `left` 和 `right`。关节目标接口是同步写入：SDK 写入失败会直接返回
 HTTP 错误，调用方不会把“已排队”误认为硬件已经接受。
 
-退出节点时默认先下发 `released`，随后关闭灵巧手关节使能。
+退出节点时默认先下发 `released`，随后关闭灵巧手关节使能。设置
+`keep_status:=true` 后，节点启动、退出和启动失败清理都不会下发 `released`；
+`release_on_timeout` 的 Quest 按钮超时保护仍然生效，退出时的关节失能逻辑也不变。
 
 当只启用一只灵巧手且 `left_serial/right_serial` 为 `auto` 时，节点会在启动时扫描
 `/sys/bus/usb/devices`，读取 `0483:2000` 设备的 `iSerial`，然后使用检测到的序列号
@@ -297,8 +299,8 @@ HTTP 错误，调用方不会把“已排队”误认为硬件已经接受。
 当前 `config/wuji_trigger_hand.yaml` 已固定左右手序列号:
 
 ```yaml
-left_serial: 348534683533
-right_serial: 3671354F3333
+left_serial: "348534683533"
+right_serial: "3671354F3333"
 ```
 
 如果临时更换硬件，也可以在 launch 命令里覆盖:
