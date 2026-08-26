@@ -9,9 +9,9 @@ wuji_trigger_hand:
     # Release a closed hand if Quest button messages stop arriving.
     buttons_timeout_sec: 0.5
     watchdog_rate_hz: 10.0
-    # Keep the current physical pose across node startup/shutdown. This only
-    # suppresses startup/shutdown release commands; timeout release is unchanged.
-    keep_status: false
+    # Force enabled hands to their calibrated closed pose and ignore Quest hand
+    # controls. Startup commands contain only closed-pose targets, never released.
+    keep_close: false
     release_on_startup: true
     release_on_timeout: true
     release_on_shutdown: true

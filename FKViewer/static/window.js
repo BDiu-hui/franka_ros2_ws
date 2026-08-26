@@ -951,9 +951,9 @@ function renderTeleopConfig(options) {
           <div class="teleop-card-title">手柄摇操层</div>
           <div class="teleop-card-sub">Quest reader / teleop / Wuji / recorder</div>
         </div>
-        <label class="teleop-keep-status">
-          <input id="teleop-keep-status" type="checkbox">
-          <span>keep status（切换时保持灵巧手姿态）</span>
+        <label class="teleop-keep-close">
+          <input id="teleop-keep-close" type="checkbox">
+          <span>keep close（保持双手关闭并忽略手柄控制）</span>
         </label>
         <button class="primary teleop-main-button" data-launch="teleop_terminal2_quest">启动手柄</button>
         <button class="danger" data-stop="teleop_terminal2_quest">停止手柄程序</button>
@@ -1077,7 +1077,7 @@ function moduleSelections() {
   if (moduleName === "teleop") {
     return {
       profile_file: optionsCache?.teleop?.profile_file || "",
-      keep_status: Boolean($("#teleop-keep-status")?.checked),
+      keep_close: Boolean($("#teleop-keep-close")?.checked),
     };
   }
   return {};

@@ -89,6 +89,7 @@ class HandCommandWorker:
         hand: Any,
         trajectory_duration_sec: float,
         trajectory_rate_hz: float,
+        initial_target_pose: list[list[float]] | None = None,
     ) -> None:
         self._node = node
         self.config = config
@@ -97,9 +98,14 @@ class HandCommandWorker:
         self.trajectory_rate_hz = max(float(trajectory_rate_hz), 1.0)
         self._hand_lock = threading.Lock()
         self._last_target_lock = threading.Lock()
+        initial_pose = (
+            config.released_pose
+            if initial_target_pose is None
+            else initial_target_pose
+        )
         self._last_target_positions: list[float] | None = flatten_joint_positions(
-            config.released_pose,
-            f"{config.side}_released_pose",
+            initial_pose,
+            f"{config.side}_initial_target_pose",
         )
         self._condition = threading.Condition()
         self._pending: tuple[str, list[list[float]]] | None = None
@@ -350,7 +356,7 @@ class Ros2CommandHand:
 
 
 class WujiTriggerHandNode(Node):
-    """Toggle Wuji hand released/close_type3 poses from Quest index triggers."""
+    """Toggle Wuji hand poses from Quest triggers or lock them closed."""
 
     def __init__(self) -> None:
         super().__init__("wuji_trigger_hand")
@@ -360,7 +366,7 @@ class WujiTriggerHandNode(Node):
         self.declare_parameter("release_threshold", 0.35)
         self.declare_parameter("buttons_timeout_sec", 0.5)
         self.declare_parameter("watchdog_rate_hz", 10.0)
-        self.declare_parameter("keep_status", False)
+        self.declare_parameter("keep_close", False)
         self.declare_parameter("release_on_startup", True)
         self.declare_parameter("release_on_timeout", True)
         self.declare_parameter("release_on_shutdown", True)
@@ -416,7 +422,7 @@ class WujiTriggerHandNode(Node):
             float(self.get_parameter("watchdog_rate_hz").value),
             1.0,
         )
-        self.keep_status = bool(self.get_parameter("keep_status").value)
+        self.keep_close = bool(self.get_parameter("keep_close").value)
         self.release_on_startup = bool(
             self.get_parameter("release_on_startup").value
         )
@@ -541,12 +547,23 @@ class WujiTriggerHandNode(Node):
                     hand,
                     self.trajectory_duration_sec,
                     self.trajectory_rate_hz,
+                    initial_target_pose=(
+                        config.closed_pose if self.keep_close else config.released_pose
+                    ),
                 )
                 self.workers[config.side] = worker
                 self.trigger_pressed[config.side] = False
-                self.hand_closed[config.side] = False
+                self.hand_closed[config.side] = self.keep_close
                 worker.write_enabled(True)
-                if self.release_on_startup and not self.keep_status:
+                if self.keep_close:
+                    if self.control_mode == CONTROL_MODE_SERVICE:
+                        worker.write_pose_sync(config.closed_pose)
+                    else:
+                        worker.request_pose(
+                            "closed_startup_lock",
+                            config.closed_pose,
+                        )
+                elif self.release_on_startup:
                     if self.control_mode == CONTROL_MODE_SERVICE:
                         worker.write_pose_sync(config.released_pose)
                     else:
@@ -572,7 +589,7 @@ class WujiTriggerHandNode(Node):
                     )
         except Exception:
             self._cleanup_hands(
-                release=not self.keep_status,
+                release=not self.keep_close,
                 disable=True,
             )
             raise
@@ -580,16 +597,17 @@ class WujiTriggerHandNode(Node):
         self.buttons_sub = None
         self.watchdog_timer = None
         if self.control_mode == CONTROL_MODE_TRIGGER:
-            self.buttons_sub = self.create_subscription(
-                String,
-                self.buttons_topic,
-                self.buttons_callback,
-                10,
-            )
-            self.watchdog_timer = self.create_timer(
-                1.0 / watchdog_rate,
-                self.watchdog_callback,
-            )
+            if not self.keep_close:
+                self.buttons_sub = self.create_subscription(
+                    String,
+                    self.buttons_topic,
+                    self.buttons_callback,
+                    10,
+                )
+                self.watchdog_timer = self.create_timer(
+                    1.0 / watchdog_rate,
+                    self.watchdog_callback,
+                )
         else:
             try:
                 if self.control_backend == "ros2":
@@ -614,7 +632,7 @@ class WujiTriggerHandNode(Node):
                 self.command_server.start()
             except Exception:
                 self._cleanup_hands(
-                    release=not self.keep_status,
+                    release=not self.keep_close,
                     disable=True,
                 )
                 raise
@@ -654,7 +672,7 @@ class WujiTriggerHandNode(Node):
             f"actual_joint_state_rate={self.actual_joint_state_rate_hz:.1f}Hz, "
             f"skip_actual_read_while_commanding="
             f"{self.skip_actual_read_while_commanding}, "
-            f"keep_status={self.keep_status}, "
+            f"keep_close={self.keep_close}, "
             f"control_mode={self.control_mode}, "
             f"command_server="
             f"{None if self.command_server is None else self.command_server.url}"
@@ -877,6 +895,8 @@ class WujiTriggerHandNode(Node):
         return wujihandpy.Hand(serial_number=config.serial)
 
     def buttons_callback(self, msg: String) -> None:
+        if self.keep_close:
+            return
         try:
             buttons = json.loads(msg.data)
         except json.JSONDecodeError as exc:
@@ -924,6 +944,8 @@ class WujiTriggerHandNode(Node):
                 worker.request_pose("released_toggle", config.released_pose)
 
     def watchdog_callback(self) -> None:
+        if self.keep_close:
+            return
         if not self.release_on_timeout or self.buttons_timeout <= 0.0:
             return
         if self.last_buttons_time is None:
@@ -1036,7 +1058,7 @@ class WujiTriggerHandNode(Node):
                     "within 2 seconds."
                 )
         self._cleanup_hands(
-            release=self.release_on_shutdown and not self.keep_status,
+            release=self.release_on_shutdown and not self.keep_close,
             disable=self.disable_on_shutdown,
             release_hold_sec=self.shutdown_release_hold,
         )

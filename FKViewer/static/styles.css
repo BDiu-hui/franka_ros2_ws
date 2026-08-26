@@ -604,7 +604,7 @@ select {
   margin-top: 2px;
   font: 11px var(--mono);
 }
-.teleop-keep-status {
+.teleop-keep-close {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -612,7 +612,7 @@ select {
   color: var(--muted);
   cursor: pointer;
 }
-.teleop-keep-status input {
+.teleop-keep-close input {
   width: 16px;
   height: 16px;
   margin: 0;

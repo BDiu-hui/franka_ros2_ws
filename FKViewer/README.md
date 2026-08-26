@@ -54,9 +54,9 @@ python3 FKViewer/server.py --host 127.0.0.1 --port 8788
 - 摇操控制：窗口里只保留“启动机械臂”和“启动手柄”两个主按钮；右上角“设置”
   打开 `simple_dual_split_launch.yaml` 的所有 profile 参数，保存后下次启动立即生效。
   每个主按钮下方有对应停止按钮，只停止 FKViewer 自己启动的进程；机械臂和手柄日志
-  分两个窗口实时滚动显示。“启动手柄”前可勾选 `keep status`；默认不勾选并保持原有
-  启停时释放双手的逻辑，勾选后本次进程启停不会下发 `released` 姿态。该选项不影响
-  Quest 按钮超时释放，也不会改变 Wuji Driver 退出时的关节失能行为。
+  分两个窗口实时滚动显示。“启动手柄”前可勾选 `keep close`；默认不勾选并保持原有
+  启停时释放双手的逻辑。勾选后双手只接收预设 `closed` 姿态，不响应 Quest 扳机或
+  按钮超时释放；停止时不下发 `released`，但 Wuji Driver 退出时仍会失能关节。
 - 统一控制：使用独立的 `unified_impedance_control` 包启动一套共享双臂阻抗与
   Wuji Driver。默认由推理控制，Quest `Y` 键在推理/摇操之间切换；摇操接管时
   推理 `/pose` 与 Wuji HTTP 命令会被入口拒绝。Quest 层继续使用原录制节点，

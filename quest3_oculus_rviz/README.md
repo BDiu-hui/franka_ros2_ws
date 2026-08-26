@@ -284,8 +284,8 @@ curl http://127.0.0.1:8765/health
 HTTP 错误，调用方不会把“已排队”误认为硬件已经接受。
 
 退出节点时默认先下发 `released`，随后关闭灵巧手关节使能。设置
-`keep_status:=true` 后，节点启动、退出和启动失败清理都不会下发 `released`；
-`release_on_timeout` 的 Quest 按钮超时保护仍然生效，退出时的关节失能逻辑也不变。
+`keep_close:=true` 后，节点启动时只下发 `closed` 目标，不会先走到 `released`；
+运行期间忽略 Quest 扳机和按钮超时释放，退出时不张开，但关节失能逻辑保持不变。
 
 当只启用一只灵巧手且 `left_serial/right_serial` 为 `auto` 时，节点会在启动时扫描
 `/sys/bus/usb/devices`，读取 `0483:2000` 设备的 `iSerial`，然后使用检测到的序列号

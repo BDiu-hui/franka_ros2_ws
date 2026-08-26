@@ -65,8 +65,8 @@ def _include_profile(context, *args, **kwargs):
         )
 
     profile_arguments = dict(profiles[profile])
-    profile_arguments["wuji_keep_status"] = LaunchConfiguration(
-        "wuji_keep_status"
+    profile_arguments["wuji_keep_close"] = LaunchConfiguration(
+        "wuji_keep_close"
     ).perform(context)
 
     return [
@@ -86,7 +86,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("profile_file", default_value=default_profile_file),
             DeclareLaunchArgument("profile", default_value="franka_stack"),
-            DeclareLaunchArgument("wuji_keep_status", default_value="false"),
+            DeclareLaunchArgument("wuji_keep_close", default_value="false"),
             OpaqueFunction(function=_include_profile),
         ]
     )

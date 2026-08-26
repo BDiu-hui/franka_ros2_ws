@@ -127,6 +127,27 @@ def test_trigger_mode_keeps_quest_subscription_and_watchdog() -> None:
         assert node.buttons_sub is not None
         assert node.watchdog_timer is not None
         assert node.command_server is None
+
+        requests: list[str] = []
+        worker = node.workers["right"]
+        worker.request_pose = lambda name, _pose: requests.append(name)
+        high = SimpleNamespace(data=json.dumps({"rightTrig": 1.0}))
+        low = SimpleNamespace(data=json.dumps({"rightTrig": 0.0}))
+
+        node.buttons_callback(high)
+        node.buttons_callback(low)
+        node.buttons_callback(high)
+        node.buttons_callback(low)
+        node.buttons_callback(high)
+        node.last_buttons_time = time.monotonic() - 1.0
+        node.watchdog_callback()
+
+        assert requests == [
+            "close_type3",
+            "released_toggle",
+            "close_type3",
+            "released_timeout",
+        ]
     finally:
         node.destroy_node()
         if rclpy.ok():
@@ -172,7 +193,7 @@ def test_default_mode_releases_on_startup_and_shutdown(
     assert hand.enabled == [True, False]
 
 
-def test_keep_status_suppresses_switch_releases_but_not_timeout(
+def test_keep_close_locks_closed_pose_and_suppresses_teleop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = (
@@ -190,31 +211,46 @@ def test_keep_status_suppresses_switch_releases_but_not_timeout(
             "--params-file",
             str(config_path),
             "-p",
-            "keep_status:=true",
+            "keep_close:=true",
             "-p",
             "publish_joint_states:=false",
+            "-p",
+            "trajectory_duration_sec:=0.05",
+            "-p",
+            "trajectory_rate_hz:=100.0",
             "-p",
             "shutdown_release_hold_sec:=0.0",
         ]
     )
     node = WujiTriggerHandNode()
-    timeout_requests: list[str] = []
     try:
-        assert hand.targets == []
         worker = node.workers["right"]
-        worker.request_pose = lambda name, _pose: timeout_requests.append(name)
-        node.hand_closed["right"] = True
-        node.last_buttons_time = time.monotonic() - 1.0
+        deadline = time.monotonic() + 1.0
+        while worker.has_pending_or_active_command() and time.monotonic() < deadline:
+            time.sleep(0.01)
 
+        assert not worker.has_pending_or_active_command()
+        closed_pose = worker.config.closed_pose
+        assert hand.targets
+        assert all(target == closed_pose for target in hand.targets)
+        assert node.hand_closed["right"] is True
+        assert node.buttons_sub is None
+        assert node.watchdog_timer is None
+        assert node.command_server is None
+
+        target_count = len(hand.targets)
+        node.buttons_callback(SimpleNamespace(data=json.dumps({"rightTrig": 1.0})))
+        node.last_buttons_time = time.monotonic() - 1.0
         node.watchdog_callback()
 
-        assert timeout_requests == ["released_timeout"]
+        assert len(hand.targets) == target_count
+        assert node.hand_closed["right"] is True
     finally:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
 
-    assert hand.targets == []
+    assert all(target == closed_pose for target in hand.targets)
     assert hand.enabled == [True, False]
 
 
