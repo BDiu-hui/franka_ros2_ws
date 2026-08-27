@@ -40,13 +40,8 @@ quest3_data_recorder:
     # These A031-PC2.1-ZC cameras all report the same USB serial (SN0001), so
     # serial cannot distinguish them on this machine. Use usb_path + stream_index.
     # Current index-0 video nodes:
-    #   1-2.3 -> /dev/video6, 1-2.2 -> /dev/video4
-    #   1-7.3 -> /dev/video2, 1-7.2 -> /dev/video0
-    camera_names: ["l_left_camera", "l_right_camera", "r_left_camera", "r_right_camera"]
-    l_left_camera:
-      usb_path: "1-2.2"
-      serial: ""
-      stream_index: 0
+    #   1-2.3 -> /dev/video6, 1-7.3 -> /dev/video2
+    camera_names: ["l_right_camera", "r_left_camera"]
     l_right_camera:
       usb_path: "1-2.3"
       serial: ""
@@ -55,11 +50,6 @@ quest3_data_recorder:
       usb_path: "1-7.3"
       serial: ""
       stream_index: 0
-    r_right_camera:
-      usb_path: "1-7.2"
-      serial: ""
-      stream_index: 0
-
     arm_names: ["left", "right"]
 
     left:

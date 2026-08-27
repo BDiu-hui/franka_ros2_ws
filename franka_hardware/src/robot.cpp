@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <pthread.h>
 #include <cassert>
 #include <mutex>
+#include <system_error>
 
 #include <franka/control_tools.h>
 #include <franka/rate_limiting.h>
@@ -44,7 +46,24 @@ Robot::Robot(const std::string& robot_ip, const rclcpp::Logger& logger) {
                 "https://frankarobotics.github.io/docs/"
                 "installation_linux.html#setting-up-the-real-time-kernel\n");
   }
-  robot_ = std::make_unique<franka::Robot>(robot_ip, rt_config);
+  int scheduler_policy;
+  sched_param scheduler_parameters{};
+  int error = pthread_getschedparam(pthread_self(), &scheduler_policy, &scheduler_parameters);
+  if (error != 0) {
+    throw std::system_error(error, std::generic_category(), "Failed to save thread scheduler");
+  }
+
+  try {
+    robot_ = std::make_unique<franka::Robot>(robot_ip, rt_config);
+  } catch (...) {
+    pthread_setschedparam(pthread_self(), scheduler_policy, &scheduler_parameters);
+    throw;
+  }
+
+  error = pthread_setschedparam(pthread_self(), scheduler_policy, &scheduler_parameters);
+  if (error != 0) {
+    throw std::system_error(error, std::generic_category(), "Failed to restore thread scheduler");
+  }
   model_ = std::make_unique<franka::Model>(robot_->loadModel());
   franka_hardware_model_ = std::make_unique<Model>(model_.get());
 }

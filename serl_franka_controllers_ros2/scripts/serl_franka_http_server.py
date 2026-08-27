@@ -125,6 +125,9 @@ class FrankaHTTPBridge(Node):
         self.declare_parameter("auto_start_retry_interval_sec", 2.0)
 
         self._state_lock = threading.RLock()
+        self._controller_states_lock = threading.Lock()
+        self._controller_states_cache: Dict[str, str] = {}
+        self._controller_states_cache_time = 0.0
         self.pose = [0.0] * 7
         self.vel = [0.0] * 6
         self.force = [0.0] * 3
@@ -617,7 +620,7 @@ class FrankaHTTPBridge(Node):
         if q is not None and len(q) != 7:
             raise ValueError("q must contain 7 joint angles")
 
-        states = self._controller_states()
+        states = self._controller_states(max_age_sec=1.0)
         if states.get(self.impedance_controller) != "active":
             if self.pose_auto_activate_impedance:
                 self.start_impedance()
@@ -974,11 +977,20 @@ class FrankaHTTPBridge(Node):
             return f"{prefix}_hand_tcp"
         return f"{prefix}_link8"
 
-    def _controller_states(self) -> Dict[str, str]:
-        request = ListControllers.Request()
-        future = self.list_controllers_client.call_async(request)
-        response = self._await_future(future, self.request_timeout_sec)
-        return {controller.name: controller.state for controller in response.controller}
+    def _controller_states(self, max_age_sec: float = 0.0) -> Dict[str, str]:
+        with self._controller_states_lock:
+            now = time.monotonic()
+            if self._controller_states_cache and now - self._controller_states_cache_time < max_age_sec:
+                return dict(self._controller_states_cache)
+
+            request = ListControllers.Request()
+            future = self.list_controllers_client.call_async(request)
+            response = self._await_future(future, self.request_timeout_sec)
+            self._controller_states_cache = {
+                controller.name: controller.state for controller in response.controller
+            }
+            self._controller_states_cache_time = time.monotonic()
+            return dict(self._controller_states_cache)
 
     def _ensure_controller_loaded(self, controller_name: str) -> None:
         self._wait_for_service(self.list_controllers_client, "list_controllers")
@@ -1029,6 +1041,8 @@ class FrankaHTTPBridge(Node):
                 f"Failed to switch controllers activate={request.activate_controllers} "
                 f"deactivate={request.deactivate_controllers}"
             )
+        with self._controller_states_lock:
+            self._controller_states_cache_time = 0.0
 
     def _set_joint_target(self, target: List[float]) -> None:
         self._wait_for_service(self.joint_set_params_client, "joint_set_parameters")

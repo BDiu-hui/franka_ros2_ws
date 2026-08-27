@@ -3,8 +3,8 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -21,6 +21,7 @@
 #include <rclcpp_lifecycle/state.hpp>
 // Humble still needs this define for the non-polling publisher implementation.
 #define NON_POLLING 1  // NOLINT
+#include <realtime_tools/realtime_buffer.hpp>
 #include <realtime_tools/realtime_publisher.hpp>
 
 #include <serl_franka_controllers_ros2/msg/cartesian_impedance_command.hpp>
@@ -70,6 +71,14 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
     double elbow_damping{0.0};
   };
 
+  struct TargetCommand {
+    Eigen::Vector3d position{Eigen::Vector3d::Zero()};
+    Eigen::Quaterniond orientation{Eigen::Quaterniond::Identity()};
+    Eigen::Matrix<double, 7, 1> master_q{Eigen::Matrix<double, 7, 1>::Zero()};
+    bool has_master_q{false};
+    std::uint64_t sequence{0};
+  };
+
   Eigen::Matrix<double, 7, 1> saturate_torque_rate(
       const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
       const Eigen::Matrix<double, 7, 1>& tau_j_d) const;
@@ -110,7 +119,8 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   int jacobian_publish_counter_{0};
 
   ComplianceParams compliance_params_;
-  std::mutex target_mutex_;
+  realtime_tools::RealtimeBuffer<TargetCommand> target_command_buffer_;
+  std::uint64_t last_target_sequence_{0};
 
   Eigen::Matrix<double, 6, 6> cartesian_stiffness_{Eigen::Matrix<double, 6, 6>::Zero()};
   Eigen::Matrix<double, 6, 6> cartesian_stiffness_target_{Eigen::Matrix<double, 6, 6>::Zero()};
@@ -124,16 +134,12 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Eigen::Matrix<double, 3, 1> rotational_clip_min_{Eigen::Matrix<double, 3, 1>::Zero()};
   Eigen::Matrix<double, 3, 1> rotational_clip_max_{Eigen::Matrix<double, 3, 1>::Zero()};
   Eigen::Matrix<double, 7, 1> q_d_nullspace_{Eigen::Matrix<double, 7, 1>::Zero()};
-  Eigen::Matrix<double, 7, 1> q_master_target_{Eigen::Matrix<double, 7, 1>::Zero()};
   Eigen::Matrix<double, 7, 1> q_master_{Eigen::Matrix<double, 7, 1>::Zero()};
-  bool have_master_q_{false};
   Eigen::Matrix<double, 6, 1> error_{Eigen::Matrix<double, 6, 1>::Zero()};
   Eigen::Matrix<double, 6, 1> error_i_{Eigen::Matrix<double, 6, 1>::Zero()};
 
   Eigen::Vector3d position_d_{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond orientation_d_{Eigen::Quaterniond::Identity()};
-  Eigen::Vector3d position_d_target_{Eigen::Vector3d::Zero()};
-  Eigen::Quaterniond orientation_d_target_{Eigen::Quaterniond::Identity()};
 
   double nullspace_stiffness_{20.0};
   double nullspace_stiffness_target_{20.0};

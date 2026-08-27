@@ -195,9 +195,9 @@ CallbackReturn CartesianImpedanceController::on_configure(
 
   apply_compliance_params(compliance_params_);
   position_d_.setZero();
-  position_d_target_.setZero();
   orientation_d_ = Eigen::Quaterniond::Identity();
-  orientation_d_target_ = Eigen::Quaterniond::Identity();
+  target_command_buffer_.writeFromNonRT(TargetCommand{});
+  last_target_sequence_ = 0;
   error_i_.setZero();
 
   return CallbackReturn::SUCCESS;
@@ -221,18 +221,13 @@ CallbackReturn CartesianImpedanceController::on_activate(
   position_d_ = initial_transform.translation();
   orientation_d_ = Eigen::Quaterniond(initial_transform.linear());
 
-  {
-    std::lock_guard<std::mutex> lock(target_mutex_);
-    position_d_target_ = position_d_;
-    orientation_d_target_ = orientation_d_;
-  }
-
   q_d_nullspace_ = q_initial;
-  {
-    std::lock_guard<std::mutex> lock(target_mutex_);
-    q_master_target_ = q_initial;
-    have_master_q_ = false;
-  }
+  TargetCommand initial_target;
+  initial_target.position = position_d_;
+  initial_target.orientation = orientation_d_;
+  initial_target.master_q = q_initial;
+  target_command_buffer_.writeFromNonRT(initial_target);
+  last_target_sequence_ = initial_target.sequence;
   q_master_ = q_initial;
   error_i_.setZero();
   return CallbackReturn::SUCCESS;
@@ -270,16 +265,10 @@ controller_interface::return_type CartesianImpedanceController::update(
   Eigen::Vector3d position(transform.translation());
   Eigen::Quaterniond orientation(transform.linear());
 
-  Eigen::Vector3d position_target;
-  Eigen::Quaterniond orientation_target;
-  Eigen::Matrix<double, 7, 1> q_master_target_local;
-  bool have_master_q_local;
-  {
-    std::lock_guard<std::mutex> lock(target_mutex_);
-    position_target = position_d_target_;
-    orientation_target = orientation_d_target_;
-    q_master_target_local = q_master_target_;
-    have_master_q_local = have_master_q_;
+  const TargetCommand target = *target_command_buffer_.readFromRT();
+  if (target.sequence != last_target_sequence_) {
+    error_i_.setZero();
+    last_target_sequence_ = target.sequence;
   }
 
   error_.head(3) = position - position_d_;
@@ -287,7 +276,7 @@ controller_interface::return_type CartesianImpedanceController::update(
     error_(i) = std::min(std::max(error_(i), translational_clip_min_(i)), translational_clip_max_(i));
   }
 
-  if (orientation_target.coeffs().dot(orientation.coeffs()) < 0.0) {
+  if (target.orientation.coeffs().dot(orientation.coeffs()) < 0.0) {
     orientation.coeffs() = -orientation.coeffs();
   }
   Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);
@@ -328,7 +317,7 @@ controller_interface::return_type CartesianImpedanceController::update(
       (nullspace_stiffness_ * qe - (2.0 * std::sqrt(nullspace_stiffness_)) * dqe);
 
   Eigen::Matrix<double, 7, 1> tau_elbow_null = Eigen::Matrix<double, 7, 1>::Zero();
-  if (have_master_q_local && elbow_stiffness_ > 0.0) {
+  if (target.has_master_q && elbow_stiffness_ > 0.0) {
     const Eigen::Vector3d elbow_master = compute_elbow_position(q_master_);
     const auto elbow_pose_array = franka_robot_model_->getPoseMatrix(franka::Frame::kJoint4);
     const Eigen::Affine3d elbow_transform(Eigen::Matrix4d::Map(elbow_pose_array.data()));
@@ -360,12 +349,12 @@ controller_interface::return_type CartesianImpedanceController::update(
   joint1_nullspace_stiffness_ =
       compliance_params_.filter_params * joint1_nullspace_stiffness_target_ +
       (1.0 - compliance_params_.filter_params) * joint1_nullspace_stiffness_;
-  position_d_ = compliance_params_.filter_params * position_target +
+  position_d_ = compliance_params_.filter_params * target.position +
                 (1.0 - compliance_params_.filter_params) * position_d_;
-  orientation_d_ = orientation_d_.slerp(compliance_params_.filter_params, orientation_target);
+  orientation_d_ = orientation_d_.slerp(compliance_params_.filter_params, target.orientation);
   ki_ = compliance_params_.filter_params * ki_target_ +
         (1.0 - compliance_params_.filter_params) * ki_;
-  q_master_ = compliance_params_.filter_params * q_master_target_local +
+  q_master_ = compliance_params_.filter_params * target.master_q +
               (1.0 - compliance_params_.filter_params) * q_master_;
   elbow_stiffness_ = compliance_params_.filter_params * elbow_stiffness_target_ +
                      (1.0 - compliance_params_.filter_params) * elbow_stiffness_;
@@ -454,23 +443,24 @@ void CartesianImpedanceController::apply_compliance_params(const ComplianceParam
 
 void CartesianImpedanceController::equilibrium_pose_callback(
     const serl_franka_controllers_ros2::msg::CartesianImpedanceCommand::SharedPtr msg) {
-  std::lock_guard<std::mutex> lock(target_mutex_);
-  position_d_target_ << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
-  error_i_.setZero();
-  const Eigen::Quaterniond last_orientation_d_target(orientation_d_target_);
-  orientation_d_target_.coeffs() << msg->pose.orientation.x, msg->pose.orientation.y,
+  TargetCommand target = *target_command_buffer_.readFromNonRT();
+  target.position << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
+  const Eigen::Quaterniond previous_orientation(target.orientation);
+  target.orientation.coeffs() << msg->pose.orientation.x, msg->pose.orientation.y,
       msg->pose.orientation.z, msg->pose.orientation.w;
-  if (last_orientation_d_target.coeffs().dot(orientation_d_target_.coeffs()) < 0.0) {
-    orientation_d_target_.coeffs() = -orientation_d_target_.coeffs();
+  if (previous_orientation.coeffs().dot(target.orientation.coeffs()) < 0.0) {
+    target.orientation.coeffs() = -target.orientation.coeffs();
   }
   if (msg->has_master_q) {
     for (size_t i = 0; i < kNumJoints; ++i) {
-      q_master_target_(static_cast<Eigen::Index>(i)) = msg->master_q[i];
+      target.master_q(static_cast<Eigen::Index>(i)) = msg->master_q[i];
     }
-    have_master_q_ = true;
+    target.has_master_q = true;
   } else {
-    have_master_q_ = false;
+    target.has_master_q = false;
   }
+  ++target.sequence;
+  target_command_buffer_.writeFromNonRT(target);
 }
 
 Eigen::Vector3d CartesianImpedanceController::compute_elbow_position(
