@@ -13,18 +13,18 @@ using Matrix67d = Eigen::Matrix<double, 6, 7>;
 using Matrix37d = Eigen::Matrix<double, 3, 7>;
 
 struct ComplianceParams {
-  double translational_stiffness{2000.0};
+  double translational_stiffness{2020.0};
   double translational_damping{89.0};
   double rotational_stiffness{300.0};
   double rotational_damping{7.0};
-  double nullspace_stiffness{0.2};
+  double nullspace_stiffness{0.5};
   double joint1_nullspace_stiffness{100.0};
-  double translational_clip_neg_x{0.01};
-  double translational_clip_neg_y{0.01};
-  double translational_clip_neg_z{0.01};
-  double translational_clip_x{0.01};
-  double translational_clip_y{0.01};
-  double translational_clip_z{0.01};
+  double translational_clip_neg_x{0.03};
+  double translational_clip_neg_y{0.03};
+  double translational_clip_neg_z{0.03};
+  double translational_clip_x{0.03};
+  double translational_clip_y{0.03};
+  double translational_clip_z{0.03};
   double rotational_clip_neg_x{0.05};
   double rotational_clip_neg_y{0.05};
   double rotational_clip_neg_z{0.05};
@@ -33,7 +33,7 @@ struct ComplianceParams {
   double rotational_clip_z{0.05};
   double translational_ki{0.0};
   double rotational_ki{0.0};
-  double filter_params{0.005};
+  double filter_params{0.02};
   double elbow_stiffness{0.0};
   double elbow_damping{0.0};
 };

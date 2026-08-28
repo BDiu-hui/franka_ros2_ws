@@ -17,14 +17,14 @@ from ament_index_python.packages import get_package_prefix
 
 
 COLLISION_THRESHOLD_SPECS = {
-    "lower_torque_thresholds_nominal": (7, [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]),
-    "upper_torque_thresholds_nominal": (7, [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]),
-    "lower_torque_thresholds_acceleration": (7, [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]),
-    "upper_torque_thresholds_acceleration": (7, [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]),
-    "lower_force_thresholds_nominal": (6, [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]),
-    "upper_force_thresholds_nominal": (6, [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]),
-    "lower_force_thresholds_acceleration": (6, [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]),
-    "upper_force_thresholds_acceleration": (6, [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]),
+    "lower_torque_thresholds_nominal": (7, [50.0, 50.0, 45.0, 45.0, 40.0, 35.0, 30.0]),
+    "upper_torque_thresholds_nominal": (7, [70.0, 70.0, 60.0, 60.0, 55.0, 50.0, 45.0]),
+    "lower_torque_thresholds_acceleration": (7, [50.0, 50.0, 45.0, 45.0, 40.0, 35.0, 30.0]),
+    "upper_torque_thresholds_acceleration": (7, [70.0, 70.0, 60.0, 60.0, 55.0, 50.0, 45.0]),
+    "lower_force_thresholds_nominal": (6, [55.0, 55.0, 55.0, 45.0, 45.0, 45.0]),
+    "upper_force_thresholds_nominal": (6, [75.0, 75.0, 75.0, 60.0, 60.0, 60.0]),
+    "lower_force_thresholds_acceleration": (6, [55.0, 55.0, 55.0, 45.0, 45.0, 45.0]),
+    "upper_force_thresholds_acceleration": (6, [75.0, 75.0, 75.0, 60.0, 60.0, 60.0]),
 }
 
 COLLISION_ENV_NAMES = {
