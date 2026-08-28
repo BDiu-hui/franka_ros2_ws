@@ -9,6 +9,17 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+same_rotation = module.quaternion_transition(
+    [0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, -1.0]
+)
+if not same_rotation["hemisphere_flip"]:
+    raise SystemExit(1)
+if abs(same_rotation["representation_step_deg"] - 360.0) > 1e-9:
+    raise SystemExit(1)
+if same_rotation["physical_step_deg"] > 1e-9:
+    raise SystemExit(1)
+
+
 class FakeArm:
     def __init__(self, name):
         self.name = name

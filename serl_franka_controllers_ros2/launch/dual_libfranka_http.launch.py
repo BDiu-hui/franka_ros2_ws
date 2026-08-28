@@ -1,8 +1,7 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
+from launch_ros.substitutions import FindPackagePrefix
 
 
 def generate_launch_description():
@@ -13,13 +12,6 @@ def generate_launch_description():
     right_server_port = LaunchConfiguration("right_server_port")
     left_helper_cpu = LaunchConfiguration("left_helper_cpu")
     right_helper_cpu = LaunchConfiguration("right_helper_cpu")
-    start_wuji_hands = LaunchConfiguration("start_wuji_hands")
-    left_wuji_serial = LaunchConfiguration("left_wuji_serial")
-    right_wuji_serial = LaunchConfiguration("right_wuji_serial")
-    wujihand_state_rate = LaunchConfiguration("wujihand_state_rate")
-    left_wujihand_driver_cpu = LaunchConfiguration("left_wujihand_driver_cpu")
-    right_wujihand_driver_cpu = LaunchConfiguration("right_wujihand_driver_cpu")
-    wuji_cpu = LaunchConfiguration("wuji_cpu")
     package_prefix = FindPackagePrefix("serl_franka_controllers_ros2")
     helper_path = PathJoinSubstitution(
         [package_prefix, "lib", "serl_franka_controllers_ros2", "libfranka_http_tool"]
@@ -37,13 +29,6 @@ def generate_launch_description():
             DeclareLaunchArgument("right_server_port", default_value="5001"),
             DeclareLaunchArgument("left_helper_cpu", default_value=""),
             DeclareLaunchArgument("right_helper_cpu", default_value=""),
-            DeclareLaunchArgument("start_wuji_hands", default_value="true"),
-            DeclareLaunchArgument("left_wuji_serial", default_value="348534683533"),
-            DeclareLaunchArgument("right_wuji_serial", default_value="3671354F3333"),
-            DeclareLaunchArgument("wujihand_state_rate", default_value="200.0"),
-            DeclareLaunchArgument("left_wujihand_driver_cpu", default_value="24"),
-            DeclareLaunchArgument("right_wujihand_driver_cpu", default_value="25"),
-            DeclareLaunchArgument("wuji_cpu", default_value="20"),
             ExecuteProcess(
                 cmd=[
                     server_path,
@@ -65,37 +50,6 @@ def generate_launch_description():
                     right_helper_cpu,
                 ],
                 output="screen",
-            ),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    PathJoinSubstitution(
-                        [
-                            FindPackageShare("quest3_oculus_rviz"),
-                            "launch",
-                            "simple_dual_impedance_teleop.launch.py",
-                        ]
-                    )
-                ),
-                launch_arguments={
-                    "start_left_arm": "false",
-                    "start_right_arm": "false",
-                    "start_left_teleop": "false",
-                    "start_right_teleop": "false",
-                    "start_quest_reader": "false",
-                    "start_rviz": "false",
-                    "start_data_recorder": "false",
-                    "start_wuji_trigger_hand": start_wuji_hands,
-                    "start_wujihand_driver": start_wuji_hands,
-                    "wuji_control_mode": "service",
-                    "left_wuji_enabled": "true",
-                    "right_wuji_enabled": "true",
-                    "left_wuji_serial": left_wuji_serial,
-                    "right_wuji_serial": right_wuji_serial,
-                    "wujihand_state_rate": wujihand_state_rate,
-                    "left_wujihand_driver_cpu": left_wujihand_driver_cpu,
-                    "right_wujihand_driver_cpu": right_wujihand_driver_cpu,
-                    "wuji_cpu": wuji_cpu,
-                }.items(),
             ),
         ]
     )

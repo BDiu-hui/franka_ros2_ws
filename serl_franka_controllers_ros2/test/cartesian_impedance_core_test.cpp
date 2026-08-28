@@ -37,5 +37,31 @@ int main() {
     return 1;
   }
 
+  ComplianceParams rotation_params = params;
+  rotation_params.translational_stiffness = 0.0;
+  rotation_params.rotational_stiffness = 200.0;
+  ImpedanceInput rotation_input;
+  rotation_input.jacobian(5, 0) = 1.0;
+  const Eigen::Quaterniond desired(Eigen::AngleAxisd(0.1, Eigen::Vector3d::UnitZ()));
+
+  const auto torque_for = [&](Eigen::Quaterniond orientation) {
+    CartesianImpedanceCore rotation_core;
+    ImpedanceTarget rotation_target;
+    rotation_core.reset(rotation_input, rotation_target, rotation_params);
+    rotation_target.orientation = orientation;
+    ++rotation_target.sequence;
+    (void)rotation_core.update(rotation_input, rotation_target, rotation_params);
+    return rotation_core.update(rotation_input, rotation_target, rotation_params);
+  };
+
+  const Vector7d positive_quaternion_torque = torque_for(desired);
+  Eigen::Quaterniond equivalent_negative = desired;
+  equivalent_negative.coeffs() = -equivalent_negative.coeffs();
+  const Vector7d negative_quaternion_torque = torque_for(equivalent_negative);
+  if ((positive_quaternion_torque - negative_quaternion_torque).norm() >= 1e-12 ||
+      positive_quaternion_torque(0) <= 0.0) {
+    return 1;
+  }
+
   return 0;
 }

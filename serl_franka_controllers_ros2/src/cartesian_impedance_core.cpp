@@ -38,7 +38,7 @@ Vector7d CartesianImpedanceCore::update(const ImpedanceInput& input,
   error.head(3) = error.head(3).cwiseMax(translational_clip_min_).cwiseMin(translational_clip_max_);
 
   Eigen::Quaterniond orientation(input.ee_pose.linear());
-  if (target.orientation.coeffs().dot(orientation.coeffs()) < 0.0) {
+  if (orientation_d_.coeffs().dot(orientation.coeffs()) < 0.0) {
     orientation.coeffs() = -orientation.coeffs();
   }
   const Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);

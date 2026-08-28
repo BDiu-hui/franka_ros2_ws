@@ -155,6 +155,7 @@ install(
   PROGRAMS
     scripts/serl_franka_http_server.py
     scripts/libfranka_http_server.py
+    scripts/test_dual_http_motion.py
     scripts/franka_error_recovery_watchdog.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -174,6 +175,11 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/libfranka_dual_http_server_test.py
       ${CMAKE_CURRENT_SOURCE_DIR}/scripts/libfranka_http_server.py
+  )
+  add_test(
+    NAME dual_http_motion_self_test
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_dual_http_motion.py --self-test
   )
 endif()
 

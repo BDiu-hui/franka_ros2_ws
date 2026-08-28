@@ -6,6 +6,7 @@ import math
 import os
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,9 +61,31 @@ def normalize_pose_payload(payload: Dict[str, Any]) -> Dict[str, List[float]]:
     return normalized
 
 
+def quaternion_transition(reference: List[float], current: List[float]) -> Dict[str, Any]:
+    reference_norm = math.sqrt(sum(value * value for value in reference))
+    current_norm = math.sqrt(sum(value * value for value in current))
+    reference_q = [value / reference_norm for value in reference]
+    current_q = [value / current_norm for value in current]
+    dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(reference_q, current_q))))
+    return {
+        "reference_quaternion": reference_q,
+        "target_quaternion": current_q,
+        "quaternion_dot": dot,
+        "hemisphere_flip": dot < 0.0,
+        "representation_step_deg": math.degrees(2.0 * math.acos(dot)),
+        "physical_step_deg": math.degrees(2.0 * math.acos(abs(dot))),
+    }
+
+
 class LibfrankaHTTPServer:
     def __init__(
-        self, robot_ip: str, host: str, port: int, helper_path: str, helper_cpu: str = ""
+        self,
+        robot_ip: str,
+        host: str,
+        port: int,
+        helper_path: str,
+        helper_cpu: str = "",
+        arm_name: str = "single",
     ) -> None:
         self.robot_ip = robot_ip
         self.host = host
@@ -72,6 +95,24 @@ class LibfrankaHTTPServer:
         self.http_server: ThreadingHTTPServer | None = None
         self.helper_lock = threading.Lock()
         self.helper_process: Optional[subprocess.Popen] = None
+        self.arm_name = arm_name
+        self.pose_diagnostic_lock = threading.Lock()
+        self.last_measured_quaternion: Optional[List[float]] = None
+        self.previous_target_quaternion: Optional[List[float]] = None
+        self.pose_diagnostic_sequence = 0
+        self.pose_diagnostic_file = None
+        diagnostic_dir = Path(
+            os.environ.get("LIBFRANKA_HTTP_POSE_LOG_DIR", "/tmp/franka_pose_diagnostics")
+        )
+        try:
+            diagnostic_dir.mkdir(parents=True, exist_ok=True)
+            diagnostic_path = diagnostic_dir / (
+                f"{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{arm_name}.jsonl"
+            )
+            self.pose_diagnostic_file = diagnostic_path.open("w", encoding="utf-8", buffering=1)
+            print(f"{arm_name} pose diagnostics: {diagnostic_path}", flush=True)
+        except OSError as exc:
+            print(f"Failed to open {arm_name} pose diagnostics: {exc}", flush=True)
         self.collision_thresholds = {
             name: list(default_values)
             for name, (_, default_values) in COLLISION_THRESHOLD_SPECS.items()
@@ -97,6 +138,7 @@ class LibfrankaHTTPServer:
             self.http_server.serve_forever()
         finally:
             self.stop_control()
+            self.close_pose_diagnostics()
 
     def start_control(self) -> None:
         with self.helper_lock:
@@ -180,7 +222,12 @@ class LibfrankaHTTPServer:
         return self._run_helper(["get_pose"])
 
     def get_state(self) -> Dict[str, Any]:
-        return self._run_helper(["get_state"])
+        response = self._run_helper(["get_state"])
+        pose = response.get("pose")
+        if isinstance(pose, list) and len(pose) == 7:
+            with self.pose_diagnostic_lock:
+                self.last_measured_quaternion = [float(value) for value in pose[3:]]
+        return response
 
     def clear_error(self) -> Dict[str, Any]:
         try:
@@ -225,9 +272,42 @@ class LibfrankaHTTPServer:
             command.extend(str(value) for value in master_q)
 
         response = self._run_helper(command)
+        self._write_pose_diagnostic(pose)
         response["target_pose"] = [float(value) for value in pose]
         response["method"] = "cartesian_impedance"
         return response
+
+    def _write_pose_diagnostic(self, pose: List[float]) -> None:
+        with self.pose_diagnostic_lock:
+            reference = self.previous_target_quaternion or self.last_measured_quaternion
+            reference_kind = (
+                "previous_target"
+                if self.previous_target_quaternion is not None
+                else "measured_pose"
+            )
+            self.pose_diagnostic_sequence += 1
+            record: Dict[str, Any] = {
+                "time_ns": time.time_ns(),
+                "arm": self.arm_name,
+                "sequence": self.pose_diagnostic_sequence,
+                "target_pose": pose,
+                "reference_kind": reference_kind if reference is not None else None,
+            }
+            if reference is not None:
+                record.update(quaternion_transition(reference, pose[3:]))
+            self.previous_target_quaternion = pose[3:].copy()
+            if self.pose_diagnostic_file is not None:
+                try:
+                    line = json.dumps(record, separators=(",", ":"))
+                    self.pose_diagnostic_file.write(line + "\n")
+                except OSError as exc:
+                    print(f"Failed to write {self.arm_name} pose diagnostics: {exc}", flush=True)
+                    self.close_pose_diagnostics()
+
+    def close_pose_diagnostics(self) -> None:
+        if self.pose_diagnostic_file is not None:
+            self.pose_diagnostic_file.close()
+            self.pose_diagnostic_file = None
 
     def _run_helper(self, arguments: List[str]) -> Dict[str, Any]:
         if not arguments:
@@ -368,10 +448,10 @@ class DualLibfrankaHTTPServer:
         self.http_servers: List[ThreadingHTTPServer] = []
         self.arms = {
             "left": LibfrankaHTTPServer(
-                left_robot_ip, host, left_port, helper_path, left_helper_cpu
+                left_robot_ip, host, left_port, helper_path, left_helper_cpu, "left"
             ),
             "right": LibfrankaHTTPServer(
-                right_robot_ip, host, right_port, helper_path, right_helper_cpu
+                right_robot_ip, host, right_port, helper_path, right_helper_cpu, "right"
             ),
         }
 
@@ -414,6 +494,8 @@ class DualLibfrankaHTTPServer:
             for thread in threads:
                 thread.join(timeout=2.0)
             self._parallel({name: arm.stop_control for name, arm in self.arms.items()})
+            for arm in self.arms.values():
+                arm.close_pose_diagnostics()
 
     def handle_request(self, handler: BaseHTTPRequestHandler, arm_name: str) -> None:
         try:
