@@ -63,10 +63,9 @@ CallbackReturn CartesianImpedanceController::on_init() {
     auto_declare<std::string>("arm_id", "panda");
     auto_declare<std::string>("robot_type", "");
     auto_declare<std::string>("arm_prefix", "");
-    auto_declare<std::vector<std::string>>("joint_names",
-                                           {"panda_joint1", "panda_joint2", "panda_joint3",
-                                            "panda_joint4", "panda_joint5", "panda_joint6",
-                                            "panda_joint7"});
+    auto_declare<std::vector<std::string>>(
+        "joint_names", {"panda_joint1", "panda_joint2", "panda_joint3", "panda_joint4",
+                        "panda_joint5", "panda_joint6", "panda_joint7"});
 
     auto_declare<double>("translational_stiffness", compliance_params_.translational_stiffness);
     auto_declare<double>("translational_damping", compliance_params_.translational_damping);
@@ -108,8 +107,8 @@ bool CartesianImpedanceController::read_parameters() {
   joint_names_ = get_node()->get_parameter("joint_names").as_string_array();
 
   if (joint_names_.size() != kNumJoints) {
-    RCLCPP_ERROR(get_node()->get_logger(),
-                 "Expected %zu joint names, got %zu", kNumJoints, joint_names_.size());
+    RCLCPP_ERROR(get_node()->get_logger(), "Expected %zu joint names, got %zu", kNumJoints,
+                 joint_names_.size());
     return false;
   }
 
@@ -152,12 +151,9 @@ bool CartesianImpedanceController::read_parameters() {
       get_node()->get_parameter("rotational_clip_neg_y").as_double();
   compliance_params_.rotational_clip_neg_z =
       get_node()->get_parameter("rotational_clip_neg_z").as_double();
-  compliance_params_.rotational_clip_x =
-      get_node()->get_parameter("rotational_clip_x").as_double();
-  compliance_params_.rotational_clip_y =
-      get_node()->get_parameter("rotational_clip_y").as_double();
-  compliance_params_.rotational_clip_z =
-      get_node()->get_parameter("rotational_clip_z").as_double();
+  compliance_params_.rotational_clip_x = get_node()->get_parameter("rotational_clip_x").as_double();
+  compliance_params_.rotational_clip_y = get_node()->get_parameter("rotational_clip_y").as_double();
+  compliance_params_.rotational_clip_z = get_node()->get_parameter("rotational_clip_z").as_double();
   compliance_params_.translational_ki = get_node()->get_parameter("translational_ki").as_double();
   compliance_params_.rotational_ki = get_node()->get_parameter("rotational_ki").as_double();
   compliance_params_.filter_params = get_node()->get_parameter("filter_params").as_double();
@@ -180,25 +176,21 @@ CallbackReturn CartesianImpedanceController::on_configure(
   jacobian_publisher_ =
       get_node()->create_publisher<serl_franka_controllers_ros2::msg::ZeroJacobian>(
           "~/franka_jacobian", rclcpp::SystemDefaultsQoS());
-  realtime_jacobian_publisher_ =
-      std::make_shared<realtime_tools::RealtimePublisher<
-          serl_franka_controllers_ros2::msg::ZeroJacobian>>(jacobian_publisher_);
+  realtime_jacobian_publisher_ = std::make_shared<
+      realtime_tools::RealtimePublisher<serl_franka_controllers_ros2::msg::ZeroJacobian>>(
+      jacobian_publisher_);
 
   equilibrium_pose_subscriber_ =
       get_node()->create_subscription<serl_franka_controllers_ros2::msg::CartesianImpedanceCommand>(
-      "~/equilibrium_pose", rclcpp::SystemDefaultsQoS(),
-      std::bind(&CartesianImpedanceController::equilibrium_pose_callback, this,
-                std::placeholders::_1));
+          "~/equilibrium_pose", rclcpp::SystemDefaultsQoS(),
+          std::bind(&CartesianImpedanceController::equilibrium_pose_callback, this,
+                    std::placeholders::_1));
 
   parameter_callback_handle_ = get_node()->add_on_set_parameters_callback(
       std::bind(&CartesianImpedanceController::on_parameters_set, this, std::placeholders::_1));
 
-  apply_compliance_params(compliance_params_);
-  position_d_.setZero();
-  orientation_d_ = Eigen::Quaterniond::Identity();
-  target_command_buffer_.writeFromNonRT(TargetCommand{});
-  last_target_sequence_ = 0;
-  error_i_.setZero();
+  compliance_params_buffer_.writeFromNonRT(compliance_params_);
+  target_command_buffer_.writeFromNonRT(ImpedanceTarget{});
 
   return CallbackReturn::SUCCESS;
 }
@@ -215,21 +207,19 @@ CallbackReturn CartesianImpedanceController::on_activate(
   const auto initial_state = *robot_state_ptr_;
   const auto zero_jacobian = franka_robot_model_->getZeroJacobian(franka::Frame::kEndEffector);
   jacobian_array_ = zero_jacobian;
-  const Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(initial_state.O_T_EE.data()));
+  const Eigen::Isometry3d initial_transform(Eigen::Matrix4d::Map(initial_state.O_T_EE.data()));
   const Eigen::Map<const Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
 
-  position_d_ = initial_transform.translation();
-  orientation_d_ = Eigen::Quaterniond(initial_transform.linear());
-
-  q_d_nullspace_ = q_initial;
-  TargetCommand initial_target;
-  initial_target.position = position_d_;
-  initial_target.orientation = orientation_d_;
+  ImpedanceTarget initial_target;
+  initial_target.position = initial_transform.translation();
+  initial_target.orientation = Eigen::Quaterniond(initial_transform.linear());
   initial_target.master_q = q_initial;
   target_command_buffer_.writeFromNonRT(initial_target);
-  last_target_sequence_ = initial_target.sequence;
-  q_master_ = q_initial;
-  error_i_.setZero();
+
+  ImpedanceInput initial_input;
+  initial_input.q = q_initial;
+  initial_input.ee_pose = initial_transform;
+  impedance_core_.reset(initial_input, initial_target, *compliance_params_buffer_.readFromRT());
   return CallbackReturn::SUCCESS;
 }
 
@@ -256,110 +246,31 @@ controller_interface::return_type CartesianImpedanceController::update(
     publish_zero_jacobian();
   }
 
-  const Eigen::Map<const Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
-  const Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array_.data());
-  const Eigen::Map<const Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
-  const Eigen::Map<const Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-  const Eigen::Map<const Eigen::Matrix<double, 7, 1>> tau_j_d(robot_state.tau_J_d.data());
-  const Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-  Eigen::Vector3d position(transform.translation());
-  Eigen::Quaterniond orientation(transform.linear());
+  ImpedanceInput input;
+  input.coriolis = Eigen::Map<const Vector7d>(coriolis_array.data());
+  input.jacobian = Eigen::Map<const Matrix67d>(jacobian_array_.data());
+  input.q = Eigen::Map<const Vector7d>(robot_state.q.data());
+  input.dq = Eigen::Map<const Vector7d>(robot_state.dq.data());
+  input.tau_j_d = Eigen::Map<const Vector7d>(robot_state.tau_J_d.data());
+  input.ee_pose = Eigen::Isometry3d(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
 
-  const TargetCommand target = *target_command_buffer_.readFromRT();
-  if (target.sequence != last_target_sequence_) {
-    error_i_.setZero();
-    last_target_sequence_ = target.sequence;
-  }
-
-  error_.head(3) = position - position_d_;
-  for (int i = 0; i < 3; ++i) {
-    error_(i) = std::min(std::max(error_(i), translational_clip_min_(i)), translational_clip_max_(i));
-  }
-
-  if (target.orientation.coeffs().dot(orientation.coeffs()) < 0.0) {
-    orientation.coeffs() = -orientation.coeffs();
-  }
-  Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);
-  error_.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
-  error_.tail(3) = -transform.linear() * error_.tail(3);
-  for (int i = 0; i < 3; ++i) {
-    error_(i + 3) =
-        std::min(std::max(error_(i + 3), rotational_clip_min_(i)), rotational_clip_max_(i));
-  }
-
-  error_i_.head(3) = (error_i_.head(3) + error_.head(3)).cwiseMax(-0.1).cwiseMin(0.1);
-  error_i_.tail(3) = (error_i_.tail(3) + error_.tail(3)).cwiseMax(-0.3).cwiseMin(0.3);
-
-  Eigen::Matrix<double, 7, 1> tau_task;
-  Eigen::Matrix<double, 7, 1> tau_nullspace;
-  Eigen::Matrix<double, 7, 1> tau_d;
-  const Eigen::Matrix<double, 6, 6> jj_t_damped =
-      jacobian * jacobian.transpose() +
-      (kDampedPseudoInverseLambda * kDampedPseudoInverseLambda) *
-          Eigen::Matrix<double, 6, 6>::Identity();
-  const Eigen::Matrix<double, 6, 7> jacobian_transpose_pinv =
-      jj_t_damped.ldlt().solve(jacobian);
-  const Eigen::Matrix<double, 7, 7> nullspace_projector =
-      Eigen::Matrix<double, 7, 7>::Identity() -
-      jacobian.transpose() * jacobian_transpose_pinv;
-
-  tau_task = jacobian.transpose() *
-             (-cartesian_stiffness_ * error_ - cartesian_damping_ * (jacobian * dq) -
-              ki_ * error_i_);
-
-  Eigen::Matrix<double, 7, 1> qe = q_d_nullspace_ - q;
-  qe.head(1) *= joint1_nullspace_stiffness_;
-  Eigen::Matrix<double, 7, 1> dqe = dq;
-  dqe.head(1) *= 2.0 * std::sqrt(joint1_nullspace_stiffness_);
-
-  tau_nullspace =
-      nullspace_projector *
-      (nullspace_stiffness_ * qe - (2.0 * std::sqrt(nullspace_stiffness_)) * dqe);
-
-  Eigen::Matrix<double, 7, 1> tau_elbow_null = Eigen::Matrix<double, 7, 1>::Zero();
-  if (target.has_master_q && elbow_stiffness_ > 0.0) {
-    const Eigen::Vector3d elbow_master = compute_elbow_position(q_master_);
+  const ImpedanceTarget target = *target_command_buffer_.readFromRT();
+  const ComplianceParams params = *compliance_params_buffer_.readFromRT();
+  std::optional<ElbowInput> elbow;
+  if (impedance_core_.needsElbowInput(target, params)) {
     const auto elbow_pose_array = franka_robot_model_->getPoseMatrix(franka::Frame::kJoint4);
     const Eigen::Affine3d elbow_transform(Eigen::Matrix4d::Map(elbow_pose_array.data()));
-    const Eigen::Vector3d elbow_slave = elbow_transform.translation();
     const auto elbow_jac_array = franka_robot_model_->getZeroJacobian(franka::Frame::kJoint4);
-    const Eigen::Map<const Eigen::Matrix<double, 6, 7>> J_e_full(elbow_jac_array.data());
-    const Eigen::Matrix<double, 3, 7> J_e = J_e_full.topRows(3);
-
-    const Eigen::Vector3d e_pos = elbow_master - elbow_slave;
-    const Eigen::Matrix<double, 7, 1> tau_elbow_task =
-        J_e.transpose() * (elbow_stiffness_ * e_pos - elbow_damping_ * (J_e * dq));
-
-    tau_elbow_null = nullspace_projector * tau_elbow_task;
+    elbow.emplace();
+    elbow->position = elbow_transform.translation();
+    elbow->jacobian = Eigen::Map<const Matrix67d>(elbow_jac_array.data()).topRows(3);
   }
 
-  tau_d = tau_task + tau_nullspace + tau_elbow_null + coriolis;
-  tau_d = saturate_torque_rate(tau_d, tau_j_d);
+  const Vector7d torque = impedance_core_.update(input, target, params, elbow);
 
   for (size_t i = 0; i < kNumJoints; ++i) {
-    command_interfaces_[i].set_value(tau_d(static_cast<Eigen::Index>(i)));
+    command_interfaces_[i].set_value(torque(static_cast<Eigen::Index>(i)));
   }
-
-  cartesian_stiffness_ = compliance_params_.filter_params * cartesian_stiffness_target_ +
-                         (1.0 - compliance_params_.filter_params) * cartesian_stiffness_;
-  cartesian_damping_ = compliance_params_.filter_params * cartesian_damping_target_ +
-                       (1.0 - compliance_params_.filter_params) * cartesian_damping_;
-  nullspace_stiffness_ = compliance_params_.filter_params * nullspace_stiffness_target_ +
-                         (1.0 - compliance_params_.filter_params) * nullspace_stiffness_;
-  joint1_nullspace_stiffness_ =
-      compliance_params_.filter_params * joint1_nullspace_stiffness_target_ +
-      (1.0 - compliance_params_.filter_params) * joint1_nullspace_stiffness_;
-  position_d_ = compliance_params_.filter_params * target.position +
-                (1.0 - compliance_params_.filter_params) * position_d_;
-  orientation_d_ = orientation_d_.slerp(compliance_params_.filter_params, target.orientation);
-  ki_ = compliance_params_.filter_params * ki_target_ +
-        (1.0 - compliance_params_.filter_params) * ki_;
-  q_master_ = compliance_params_.filter_params * target.master_q +
-              (1.0 - compliance_params_.filter_params) * q_master_;
-  elbow_stiffness_ = compliance_params_.filter_params * elbow_stiffness_target_ +
-                     (1.0 - compliance_params_.filter_params) * elbow_stiffness_;
-  elbow_damping_ = compliance_params_.filter_params * elbow_damping_target_ +
-                   (1.0 - compliance_params_.filter_params) * elbow_damping_;
 
   return controller_interface::return_type::OK;
 }
@@ -387,63 +298,9 @@ void CartesianImpedanceController::set_jacobian_publish_rate(double publish_rate
   jacobian_publish_counter_ = 0;
 }
 
-Eigen::Matrix<double, 7, 1> CartesianImpedanceController::saturate_torque_rate(
-    const Eigen::Matrix<double, 7, 1>& tau_d_calculated,
-    const Eigen::Matrix<double, 7, 1>& tau_j_d) const {
-  Eigen::Matrix<double, 7, 1> tau_d_saturated{};
-  for (size_t i = 0; i < kNumJoints; ++i) {
-    const double difference =
-        tau_d_calculated(static_cast<Eigen::Index>(i)) - tau_j_d(static_cast<Eigen::Index>(i));
-    tau_d_saturated(static_cast<Eigen::Index>(i)) =
-        tau_j_d(static_cast<Eigen::Index>(i)) +
-        std::max(std::min(difference, kDeltaTauMax), -kDeltaTauMax);
-  }
-  return tau_d_saturated;
-}
-
-void CartesianImpedanceController::apply_compliance_params(const ComplianceParams& params) {
-  cartesian_stiffness_target_.setIdentity();
-  cartesian_stiffness_target_.topLeftCorner(3, 3) =
-      params.translational_stiffness * Eigen::Matrix3d::Identity();
-  cartesian_stiffness_target_.bottomRightCorner(3, 3) =
-      params.rotational_stiffness * Eigen::Matrix3d::Identity();
-
-  cartesian_damping_target_.setIdentity();
-  cartesian_damping_target_.topLeftCorner(3, 3) =
-      params.translational_damping * Eigen::Matrix3d::Identity();
-  cartesian_damping_target_.bottomRightCorner(3, 3) =
-      params.rotational_damping * Eigen::Matrix3d::Identity();
-
-  nullspace_stiffness_target_ = params.nullspace_stiffness;
-  joint1_nullspace_stiffness_target_ = params.joint1_nullspace_stiffness;
-  elbow_stiffness_target_ = params.elbow_stiffness;
-  elbow_damping_target_ = params.elbow_damping;
-
-  translational_clip_min_ << -params.translational_clip_neg_x, -params.translational_clip_neg_y,
-      -params.translational_clip_neg_z;
-  translational_clip_max_ << params.translational_clip_x, params.translational_clip_y,
-      params.translational_clip_z;
-  rotational_clip_min_ << -params.rotational_clip_neg_x, -params.rotational_clip_neg_y,
-      -params.rotational_clip_neg_z;
-  rotational_clip_max_ << params.rotational_clip_x, params.rotational_clip_y,
-      params.rotational_clip_z;
-
-  ki_target_.setIdentity();
-  ki_target_.topLeftCorner(3, 3) = params.translational_ki * Eigen::Matrix3d::Identity();
-  ki_target_.bottomRightCorner(3, 3) = params.rotational_ki * Eigen::Matrix3d::Identity();
-
-  cartesian_stiffness_ = cartesian_stiffness_target_;
-  cartesian_damping_ = cartesian_damping_target_;
-  ki_ = ki_target_;
-  nullspace_stiffness_ = nullspace_stiffness_target_;
-  joint1_nullspace_stiffness_ = joint1_nullspace_stiffness_target_;
-  elbow_stiffness_ = elbow_stiffness_target_;
-  elbow_damping_ = elbow_damping_target_;
-}
-
 void CartesianImpedanceController::equilibrium_pose_callback(
     const serl_franka_controllers_ros2::msg::CartesianImpedanceCommand::SharedPtr msg) {
-  TargetCommand target = *target_command_buffer_.readFromNonRT();
+  ImpedanceTarget target = *target_command_buffer_.readFromNonRT();
   target.position << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
   const Eigen::Quaterniond previous_orientation(target.orientation);
   target.orientation.coeffs() << msg->pose.orientation.x, msg->pose.orientation.y,
@@ -461,30 +318,6 @@ void CartesianImpedanceController::equilibrium_pose_callback(
   }
   ++target.sequence;
   target_command_buffer_.writeFromNonRT(target);
-}
-
-Eigen::Vector3d CartesianImpedanceController::compute_elbow_position(
-    const Eigen::Matrix<double, 7, 1>& q) const {
-  // Modified-DH parameters for Franka FR3 / Panda (frames 0 through 4).
-  // a_{i-1}, alpha_{i-1}, d_i for i = 1..4 (joint 4 origin in base frame).
-  static constexpr std::array<double, 4> a_prev = {0.0, 0.0, 0.0, 0.0825};
-  static constexpr std::array<double, 4> alpha_prev = {0.0, -M_PI_2, M_PI_2, M_PI_2};
-  static constexpr std::array<double, 4> d = {0.333, 0.0, 0.316, 0.0};
-
-  Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
-  for (int i = 0; i < 4; ++i) {
-    const double ca = std::cos(alpha_prev[i]);
-    const double sa = std::sin(alpha_prev[i]);
-    const double ct = std::cos(q(i));
-    const double st = std::sin(q(i));
-    Eigen::Matrix4d A;
-    A << ct,     -st,     0.0,   a_prev[i],
-         st * ca, ct * ca, -sa,  -sa * d[i],
-         st * sa, ct * sa,  ca,   ca * d[i],
-         0.0,    0.0,     0.0,   1.0;
-    T = T * A;
-  }
-  return T.block<3, 1>(0, 3);
 }
 
 rcl_interfaces::msg::SetParametersResult CartesianImpedanceController::on_parameters_set(
@@ -544,7 +377,7 @@ rcl_interfaces::msg::SetParametersResult CartesianImpedanceController::on_parame
   }
 
   compliance_params_ = updated;
-  apply_compliance_params(compliance_params_);
+  compliance_params_buffer_.writeFromNonRT(compliance_params_);
 
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
@@ -553,9 +386,10 @@ rcl_interfaces::msg::SetParametersResult CartesianImpedanceController::on_parame
 
 franka::RobotState* CartesianImpedanceController::get_robot_state_ptr() {
   const auto state_interface_name = hardware_prefix_ + "/robot_state";
-  auto state_it = std::find_if(
-      state_interfaces_.begin(), state_interfaces_.end(),
-      [&](const auto& state_interface) { return state_interface.get_name() == state_interface_name; });
+  auto state_it = std::find_if(state_interfaces_.begin(), state_interfaces_.end(),
+                               [&](const auto& state_interface) {
+                                 return state_interface.get_name() == state_interface_name;
+                               });
   if (state_it == state_interfaces_.end()) {
     return nullptr;
   }

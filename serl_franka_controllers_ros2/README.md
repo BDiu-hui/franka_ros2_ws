@@ -117,6 +117,8 @@ ros2 control list_controllers
 
 ## 直接 libfranka HTTP
 
+该模式启动一个常驻的 1 kHz libfranka 阻抗控制循环；HTTP `/pose` 只更新实时目标，不再为每次请求重新建立控制连接。它和 ROS 2 `cartesian_impedance_controller` 使用同一个 `CartesianImpedanceCore`。
+
 启动:
 
 ```bash
@@ -138,7 +140,7 @@ curl -X POST http://127.0.0.1:5000/clearerr
 ```bash
 curl -X POST http://127.0.0.1:5000/pose \
   -H "Content-Type: application/json" \
-  -d '{"arr":[0.43,0.0,0.45,1.0,0.0,0.0,0.0], "duration_sec":0.0, "controller_mode":"joint"}'
+  -d '{"arr":[0.43,0.0,0.45,1.0,0.0,0.0,0.0]}'
 ```
 
 常用字段:
@@ -146,8 +148,7 @@ curl -X POST http://127.0.0.1:5000/pose \
 | 字段 | 说明 |
 | --- | --- |
 | `arr` | `[x,y,z,qx,qy,qz,qw]` 目标位姿 |
-| `duration_sec` | 运动时长，越大越慢 |
-| `controller_mode` | `joint` 或 `cartesian`，一般先用 `joint` |
+| `q` | 可选的 7 关节主臂目标，用于肘部零空间跟随 |
 
 碰撞阈值:
 
@@ -213,6 +214,36 @@ ros2 launch serl_franka_controllers_ros2 http_control.launch.py \
 curl -X POST http://127.0.0.1:5000/getstate
 curl -X POST http://127.0.0.1:5001/getstate
 ```
+
+### 双臂直接 libfranka HTTP
+
+不经过 ROS 2 控制器时，用一个服务同时管理左右两条独立的 1 kHz 阻抗循环:
+
+```bash
+ros2 launch serl_franka_controllers_ros2 dual_libfranka_http.launch.py \
+  left_robot_ip:=172.16.0.2 \
+  right_robot_ip:=172.16.0.3 \
+  left_helper_cpu:=2-3 \
+  right_helper_cpu:=8-9 \
+  server_port:=5000 \
+  right_server_port:=5001
+```
+
+现有双臂客户端可以继续使用左臂 `:5000`、右臂 `:5001` 的单臂兼容接口，包括 `/startimp`、`/clearerr`、`/getstate` 和 `/pose`。如需在一个请求中同时更新左右目标，使用任一端口的 `/dual/pose`:
+
+```bash
+curl -X POST http://127.0.0.1:5000/getpos
+curl -X POST http://127.0.0.1:5001/getpos
+
+curl -X POST http://127.0.0.1:5000/dual/pose \
+  -H "Content-Type: application/json" \
+  -d '{
+    "left":{"arr":[0.43,0.20,0.45,1.0,0.0,0.0,0.0]},
+    "right":{"arr":[0.43,-0.20,0.45,1.0,0.0,0.0,0.0]}
+  }'
+```
+
+双臂接口返回 `left` 和 `right` 两个结果。
 
 ## 和 Quest3 遥操的关系
 

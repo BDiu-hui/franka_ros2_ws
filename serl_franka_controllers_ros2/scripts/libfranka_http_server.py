@@ -2,13 +2,15 @@
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ament_index_python.packages import get_package_prefix
 
@@ -36,16 +38,43 @@ COLLISION_ENV_NAMES = {
 }
 
 
+def normalize_pose_payload(payload: Dict[str, Any]) -> Dict[str, List[float]]:
+    if not isinstance(payload, dict):
+        raise ValueError("pose payload must be a JSON object")
+    pose = payload.get("arr")
+    if not isinstance(pose, list) or len(pose) != 7:
+        raise ValueError("arr must contain [x, y, z, qx, qy, qz, qw]")
+    normalized: Dict[str, List[float]] = {"arr": [float(value) for value in pose]}
+    if not all(math.isfinite(value) for value in normalized["arr"]):
+        raise ValueError("arr must contain finite values")
+    if sum(value * value for value in normalized["arr"][3:]) < 1e-18:
+        raise ValueError("pose quaternion must be non-zero")
+
+    master_q = payload.get("q")
+    if master_q is not None:
+        if not isinstance(master_q, list) or len(master_q) != 7:
+            raise ValueError("q must contain 7 joint angles")
+        normalized["q"] = [float(value) for value in master_q]
+        if not all(math.isfinite(value) for value in normalized["q"]):
+            raise ValueError("q must contain finite values")
+    return normalized
+
+
 class LibfrankaHTTPServer:
-    def __init__(self, robot_ip: str, host: str, port: int, helper_path: str) -> None:
+    def __init__(
+        self, robot_ip: str, host: str, port: int, helper_path: str, helper_cpu: str = ""
+    ) -> None:
         self.robot_ip = robot_ip
         self.host = host
         self.port = port
         self.helper_path = helper_path
+        self.helper_cpu = helper_cpu
         self.http_server: ThreadingHTTPServer | None = None
         self.helper_lock = threading.Lock()
+        self.helper_process: Optional[subprocess.Popen] = None
         self.collision_thresholds = {
-            name: list(default_values) for name, (_, default_values) in COLLISION_THRESHOLD_SPECS.items()
+            name: list(default_values)
+            for name, (_, default_values) in COLLISION_THRESHOLD_SPECS.items()
         }
 
     def run(self) -> None:
@@ -61,9 +90,21 @@ class LibfrankaHTTPServer:
             def log_message(self, fmt: str, *args) -> None:
                 print(f'HTTP {self.command} - {fmt % args}', flush=True)
 
-        self.http_server = ThreadingHTTPServer((self.host, self.port), RequestHandler)
-        print(f"libfranka HTTP server listening on http://{self.host}:{self.port}", flush=True)
-        self.http_server.serve_forever()
+        self.start_control()
+        try:
+            self.http_server = ThreadingHTTPServer((self.host, self.port), RequestHandler)
+            print(f"libfranka HTTP server listening on http://{self.host}:{self.port}", flush=True)
+            self.http_server.serve_forever()
+        finally:
+            self.stop_control()
+
+    def start_control(self) -> None:
+        with self.helper_lock:
+            self._start_helper_locked()
+
+    def stop_control(self) -> None:
+        with self.helper_lock:
+            self._stop_helper_locked()
 
     def handle_request(self, handler: BaseHTTPRequestHandler) -> None:
         try:
@@ -75,7 +116,9 @@ class LibfrankaHTTPServer:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
         except Exception as exc:  # pylint: disable=broad-except
             print(f"HTTP {handler.path} failed: {exc}", flush=True)
-            self._send_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            self._send_json(
+                handler, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}
+            )
 
     @staticmethod
     def _read_json(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
@@ -88,7 +131,9 @@ class LibfrankaHTTPServer:
         return json.loads(body.decode("utf-8"))
 
     @staticmethod
-    def _send_json(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: Dict[str, Any]) -> None:
+    def _send_json(
+        handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: Dict[str, Any]
+    ) -> None:
         data = json.dumps(payload).encode("utf-8")
         handler.send_response(status.value)
         handler.send_header("Content-Type", "application/json")
@@ -99,6 +144,8 @@ class LibfrankaHTTPServer:
     def _dispatch(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         routes = {
             "/health": self.health,
+            "/startimp": self.start_impedance,
+            "/stopimp": self.stop_impedance,
             "/getstate": self.get_state,
             "/getpos": self.get_pose,
             "/pose": lambda: self.move_pose(payload),
@@ -110,13 +157,24 @@ class LibfrankaHTTPServer:
             raise ValueError(f"Unknown endpoint: {path}")
         return routes[path]()
 
+    def start_impedance(self) -> Dict[str, Any]:
+        self.start_control()
+        return {"ok": True, "message": "Impedance control active"}
+
+    def stop_impedance(self) -> Dict[str, Any]:
+        self.stop_control()
+        return {"ok": True, "message": "Impedance control stopped"}
+
     def health(self) -> Dict[str, Any]:
-        return {
+        response = self._run_helper(["health"])
+        response.update({
             "ok": True,
             "robot_ip": self.robot_ip,
             "helper_path": self.helper_path,
             "collision_thresholds": self._collision_thresholds_response(),
-        }
+            "control_mode": "cartesian_impedance",
+        })
+        return response
 
     def get_pose(self) -> Dict[str, Any]:
         return self._run_helper(["get_pose"])
@@ -125,7 +183,11 @@ class LibfrankaHTTPServer:
         return self._run_helper(["get_state"])
 
     def clear_error(self) -> Dict[str, Any]:
-        return self._run_helper(["clear_error"])
+        try:
+            self._run_helper(["health"])
+            return {"ok": True, "message": "No active robot error"}
+        except RuntimeError:
+            return self._run_helper(["clear_error"])
 
     def get_collision(self) -> Dict[str, Any]:
         return {
@@ -155,46 +217,113 @@ class LibfrankaHTTPServer:
         return response
 
     def move_pose(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        pose = payload.get("arr")
-        if not isinstance(pose, list) or len(pose) != 7:
-            raise ValueError("arr must contain [x, y, z, qx, qy, qz, qw]")
-
-        command: List[str] = ["move_pose"] + [str(float(value)) for value in pose]
-        if "duration_sec" in payload:
-            command.append(str(float(payload["duration_sec"])))
-        elif "controller_mode" in payload:
-            command.append("0.0")
-
-        if "controller_mode" in payload:
-            controller_mode = str(payload["controller_mode"]).strip().lower()
-            if controller_mode not in ("joint", "cartesian"):
-                raise ValueError("controller_mode must be 'joint' or 'cartesian'")
-            if len(command) == 8:
-                command.append("0.0")
-            command.append(controller_mode)
+        normalized = normalize_pose_payload(payload)
+        pose = normalized["arr"]
+        command: List[str] = ["pose"] + [str(value) for value in pose]
+        master_q = normalized.get("q")
+        if master_q is not None:
+            command.extend(str(value) for value in master_q)
 
         response = self._run_helper(command)
         response["target_pose"] = [float(value) for value in pose]
+        response["method"] = "cartesian_impedance"
         return response
 
     def _run_helper(self, arguments: List[str]) -> Dict[str, Any]:
         if not arguments:
             raise RuntimeError("Helper command is empty")
 
-        command_name = arguments[0]
-        if command_name == "move_pose":
-            command = [self.helper_path, "move_pose", self.robot_ip] + arguments[1:]
-        else:
-            command = [self.helper_path, command_name, self.robot_ip]
-
         with self.helper_lock:
-            completed = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                env=self._helper_env(),
-            )
+            if arguments[0] in ("clear_error", "set_collision"):
+                self._stop_helper_locked()
+                try:
+                    return self._run_one_shot_locked(arguments[0])
+                finally:
+                    self._start_helper_locked()
+            return self._request_helper_locked(arguments)
+
+    def _start_helper_locked(self) -> None:
+        if self.helper_process is not None and self.helper_process.poll() is None:
+            return
+        command = [self.helper_path, "impedance", self.robot_ip]
+        if self.helper_cpu:
+            command = ["taskset", "-c", self.helper_cpu] + command
+        self.helper_process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=self._helper_env(),
+        )
+        try:
+            response = self._read_helper_response_locked()
+        except Exception:
+            self._stop_helper_locked(force=True)
+            raise
+        if not response.get("ok", False):
+            self._stop_helper_locked(force=True)
+            raise RuntimeError(str(response.get("error", "Failed to start impedance control")))
+
+    def _stop_helper_locked(self, force: bool = False) -> None:
+        process = self.helper_process
+        self.helper_process = None
+        if process is None or process.poll() is not None:
+            return
+        if not force:
+            try:
+                if process.stdin is not None:
+                    process.stdin.write("shutdown\n")
+                    process.stdin.flush()
+                if process.stdout is not None:
+                    process.stdout.readline()
+                process.wait(timeout=5.0)
+                return
+            except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+                pass
+        process.terminate()
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2.0)
+
+    def _request_helper_locked(self, arguments: List[str]) -> Dict[str, Any]:
+        self._start_helper_locked()
+        process = self.helper_process
+        if process is None or process.stdin is None:
+            raise RuntimeError("Impedance helper is unavailable")
+        process.stdin.write(" ".join(arguments) + "\n")
+        process.stdin.flush()
+        response = self._read_helper_response_locked()
+        if not response.get("ok", False):
+            raise RuntimeError(str(response.get("error", "Impedance helper request failed")))
+        return response
+
+    def _read_helper_response_locked(self) -> Dict[str, Any]:
+        process = self.helper_process
+        if process is None or process.stdout is None:
+            raise RuntimeError("Impedance helper is unavailable")
+        raw_output = process.stdout.readline().strip()
+        if not raw_output:
+            return_code = process.poll()
+            raise RuntimeError(f"Impedance helper stopped unexpectedly (code {return_code})")
+        try:
+            response = json.loads(raw_output)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Failed to parse helper output: {raw_output}") from exc
+        if not isinstance(response, dict):
+            raise RuntimeError("Helper output was not a JSON object")
+        return response
+
+    def _run_one_shot_locked(self, command_name: str) -> Dict[str, Any]:
+        completed = subprocess.run(
+            [self.helper_path, command_name, self.robot_ip],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=self._helper_env(),
+        )
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
         raw_output = stdout or stderr
@@ -222,6 +351,148 @@ class LibfrankaHTTPServer:
         return {name: list(values) for name, values in self.collision_thresholds.items()}
 
 
+class DualLibfrankaHTTPServer:
+    def __init__(
+        self,
+        left_robot_ip: str,
+        right_robot_ip: str,
+        host: str,
+        left_port: int,
+        right_port: int,
+        helper_path: str,
+        left_helper_cpu: str = "",
+        right_helper_cpu: str = "",
+    ) -> None:
+        self.host = host
+        self.ports = {"left": left_port, "right": right_port}
+        self.http_servers: List[ThreadingHTTPServer] = []
+        self.arms = {
+            "left": LibfrankaHTTPServer(
+                left_robot_ip, host, left_port, helper_path, left_helper_cpu
+            ),
+            "right": LibfrankaHTTPServer(
+                right_robot_ip, host, right_port, helper_path, right_helper_cpu
+            ),
+        }
+
+    def run(self) -> None:
+        server = self
+
+        def request_handler(arm_name: str):
+            class RequestHandler(BaseHTTPRequestHandler):
+                def do_GET(self):  # noqa: N802
+                    server.handle_request(self, arm_name)
+
+                def do_POST(self):  # noqa: N802
+                    server.handle_request(self, arm_name)
+
+                def log_message(self, fmt: str, *args) -> None:
+                    print(f'HTTP {arm_name} {self.command} - {fmt % args}', flush=True)
+
+            return RequestHandler
+
+        threads: List[threading.Thread] = []
+        try:
+            self._parallel({name: arm.start_control for name, arm in self.arms.items()})
+            for name, port in self.ports.items():
+                http_server = ThreadingHTTPServer((self.host, port), request_handler(name))
+                self.http_servers.append(http_server)
+                thread = threading.Thread(target=http_server.serve_forever, daemon=True)
+                threads.append(thread)
+                thread.start()
+                print(
+                    f"dual libfranka {name} HTTP listening on http://{self.host}:{port}",
+                    flush=True,
+                )
+            while all(thread.is_alive() for thread in threads):
+                for thread in threads:
+                    thread.join(timeout=0.5)
+        finally:
+            for http_server in self.http_servers:
+                http_server.shutdown()
+                http_server.server_close()
+            for thread in threads:
+                thread.join(timeout=2.0)
+            self._parallel({name: arm.stop_control for name, arm in self.arms.items()})
+
+    def handle_request(self, handler: BaseHTTPRequestHandler, arm_name: str) -> None:
+        try:
+            payload = LibfrankaHTTPServer._read_json(handler)
+            if handler.path.startswith("/dual/"):
+                response = self._dispatch(handler.path[len("/dual"):], payload)
+            else:
+                response = self.arms[arm_name]._dispatch(handler.path, payload)
+            LibfrankaHTTPServer._send_json(handler, HTTPStatus.OK, response)
+        except ValueError as exc:
+            print(f"HTTP {handler.path} bad request: {exc}", flush=True)
+            LibfrankaHTTPServer._send_json(
+                handler, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"HTTP {handler.path} failed: {exc}", flush=True)
+            LibfrankaHTTPServer._send_json(
+                handler, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}
+            )
+
+    def _dispatch(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        for name, arm in self.arms.items():
+            prefix = f"/{name}"
+            if path.startswith(prefix + "/"):
+                return arm._dispatch(path[len(prefix):], payload)
+
+        if path in ("/health", "/getstate", "/getpos", "/clearerr", "/get_collision"):
+            return self._dual_response(
+                self._parallel(
+                    {
+                        name: lambda selected=arm: selected._dispatch(path, {})
+                        for name, arm in self.arms.items()
+                    }
+                )
+            )
+        if path in ("/pose", "/set_collision"):
+            arm_payloads = self._dual_payload(payload, path == "/pose")
+            return self._dual_response(
+                self._parallel(
+                    {
+                        name: lambda selected=arm, selected_payload=arm_payloads[name]:
+                            selected._dispatch(path, selected_payload)
+                        for name, arm in self.arms.items()
+                    }
+                )
+            )
+        raise ValueError(f"Unknown endpoint: {path}")
+
+    @staticmethod
+    def _dual_payload(payload: Dict[str, Any], pose: bool) -> Dict[str, Dict[str, Any]]:
+        if not isinstance(payload, dict) or "left" not in payload or "right" not in payload:
+            raise ValueError("dual request requires left and right objects")
+        arm_payloads: Dict[str, Dict[str, Any]] = {}
+        for name in ("left", "right"):
+            value = payload[name]
+            if pose and isinstance(value, list):
+                value = {"arr": value}
+            if not isinstance(value, dict):
+                raise ValueError(f"{name} must be a JSON object")
+            arm_payloads[name] = normalize_pose_payload(value) if pose else value
+        return arm_payloads
+
+    @staticmethod
+    def _parallel(callbacks: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {name: executor.submit(callback) for name, callback in callbacks.items()}
+            results = {}
+            for name, future in futures.items():
+                try:
+                    results[name] = future.result()
+                except Exception as exc:
+                    raise RuntimeError(f"{name} arm: {exc}") from exc
+            return results
+
+    @staticmethod
+    def _dual_response(results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        return {"ok": True, "left": results["left"], "right": results["right"]}
+
+
 def default_helper_path() -> str:
     prefix = Path(get_package_prefix("serl_franka_controllers_ros2"))
     return str(prefix / "lib" / "serl_franka_controllers_ros2" / "libfranka_http_tool")
@@ -229,18 +500,43 @@ def default_helper_path() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Standalone pure-libfranka HTTP server")
-    parser.add_argument("--robot-ip", required=True)
+    parser.add_argument("--robot-ip")
+    parser.add_argument("--left-robot-ip")
+    parser.add_argument("--right-robot-ip")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5001)
+    parser.add_argument("--left-port", type=int)
+    parser.add_argument("--right-port", type=int)
     parser.add_argument("--helper-path", default=default_helper_path())
+    parser.add_argument("--helper-cpu", default="")
+    parser.add_argument("--left-helper-cpu", default="")
+    parser.add_argument("--right-helper-cpu", default="")
     args = parser.parse_args()
 
-    server = LibfrankaHTTPServer(
-        robot_ip=args.robot_ip,
-        host=args.host,
-        port=args.port,
-        helper_path=args.helper_path,
-    )
+    dual_mode = bool(args.left_robot_ip or args.right_robot_ip)
+    if dual_mode:
+        if args.robot_ip or not args.left_robot_ip or not args.right_robot_ip:
+            parser.error("dual mode requires both --left-robot-ip and --right-robot-ip")
+        server = DualLibfrankaHTTPServer(
+            left_robot_ip=args.left_robot_ip,
+            right_robot_ip=args.right_robot_ip,
+            host=args.host,
+            left_port=args.left_port if args.left_port is not None else args.port,
+            right_port=args.right_port if args.right_port is not None else args.port + 1,
+            helper_path=args.helper_path,
+            left_helper_cpu=args.left_helper_cpu,
+            right_helper_cpu=args.right_helper_cpu,
+        )
+    else:
+        if not args.robot_ip:
+            parser.error("single-arm mode requires --robot-ip")
+        server = LibfrankaHTTPServer(
+            robot_ip=args.robot_ip,
+            host=args.host,
+            port=args.port,
+            helper_path=args.helper_path,
+            helper_cpu=args.helper_cpu,
+        )
     server.run()
 
 

@@ -43,6 +43,17 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 
 set(controller_library ${PROJECT_NAME}_controllers)
+set(impedance_core_library ${PROJECT_NAME}_impedance_core)
+
+add_library(${impedance_core_library} STATIC
+  src/cartesian_impedance_core.cpp
+)
+set_target_properties(${impedance_core_library} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(${impedance_core_library} PUBLIC
+  include
+  ${EIGEN3_INCLUDE_DIRS}
+)
+target_link_libraries(${impedance_core_library} Eigen3::Eigen)
 
 add_library(${controller_library} SHARED
   src/cartesian_impedance_controller.cpp
@@ -88,6 +99,8 @@ target_include_directories(libfranka_http_tool PUBLIC
   ${Franka_INCLUDE_DIRS}
 )
 
+ament_target_dependencies(libfranka_http_tool realtime_tools)
+
 ament_target_dependencies(${PROJECT_NAME}_rviz_panel
   ament_index_cpp
   pluginlib
@@ -100,11 +113,13 @@ target_link_libraries(${PROJECT_NAME}_rviz_panel
 )
 
 target_link_libraries(libfranka_http_tool
+  ${impedance_core_library}
   ${Franka_LIBRARIES}
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(${controller_library}
+  ${impedance_core_library}
   ${Franka_LIBRARIES}
   ${cpp_typesupport_target}
 )
@@ -148,6 +163,19 @@ install(
   FILES serl_franka_controllers_plugin.xml serl_franka_controllers_rviz_plugin.xml
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_executable(cartesian_impedance_core_test test/cartesian_impedance_core_test.cpp)
+  target_link_libraries(cartesian_impedance_core_test ${impedance_core_library})
+  add_test(NAME cartesian_impedance_core_test COMMAND cartesian_impedance_core_test)
+  add_test(
+    NAME libfranka_dual_http_server_test
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/libfranka_dual_http_server_test.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/libfranka_http_server.py
+  )
+endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(${controller_library})
