@@ -171,6 +171,10 @@ if(BUILD_TESTING)
   target_link_libraries(cartesian_impedance_core_test ${impedance_core_library})
   add_test(NAME cartesian_impedance_core_test COMMAND cartesian_impedance_core_test)
   add_test(
+    NAME libfranka_http_state_snapshot_test
+    COMMAND libfranka_http_tool self_test_state_snapshot
+  )
+  add_test(
     NAME libfranka_dual_http_server_test
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/libfranka_dual_http_server_test.py

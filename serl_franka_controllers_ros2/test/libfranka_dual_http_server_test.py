@@ -19,6 +19,13 @@ if abs(same_rotation["representation_step_deg"] - 360.0) > 1e-9:
 if same_rotation["physical_step_deg"] > 1e-9:
     raise SystemExit(1)
 
+pose_payload = {
+    "arr": [0.405, -0.01, 0.51, 0.0, 0.0, 0.0, 1.0],
+    "q": [0.1, 0.2, 0.3, -0.4, 0.5, 0.6, -0.7],
+}
+if module.normalize_pose_payload(pose_payload) != pose_payload:
+    raise SystemExit("HTTP normalization changed the commanded pose or master joints")
+
 
 class FakeArm:
     def __init__(self, name):

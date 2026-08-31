@@ -227,6 +227,7 @@ class LibfrankaHTTPServer:
         if isinstance(pose, list) and len(pose) == 7:
             with self.pose_diagnostic_lock:
                 self.last_measured_quaternion = [float(value) for value in pose[3:]]
+        self._write_state_diagnostic(response)
         return response
 
     def clear_error(self) -> Dict[str, Any]:
@@ -289,6 +290,7 @@ class LibfrankaHTTPServer:
             record: Dict[str, Any] = {
                 "time_ns": time.time_ns(),
                 "arm": self.arm_name,
+                "kind": "target",
                 "sequence": self.pose_diagnostic_sequence,
                 "target_pose": pose,
                 "reference_kind": reference_kind if reference is not None else None,
@@ -303,6 +305,24 @@ class LibfrankaHTTPServer:
                 except OSError as exc:
                     print(f"Failed to write {self.arm_name} pose diagnostics: {exc}", flush=True)
                     self.close_pose_diagnostics()
+
+    def _write_state_diagnostic(self, state: Dict[str, Any]) -> None:
+        with self.pose_diagnostic_lock:
+            if self.pose_diagnostic_file is None:
+                return
+            try:
+                record = {
+                    "time_ns": time.time_ns(),
+                    "arm": self.arm_name,
+                    "kind": "state",
+                    "state": state,
+                }
+                self.pose_diagnostic_file.write(
+                    json.dumps(record, separators=(",", ":")) + "\n"
+                )
+            except OSError as exc:
+                print(f"Failed to write {self.arm_name} state diagnostics: {exc}", flush=True)
+                self.close_pose_diagnostics()
 
     def close_pose_diagnostics(self) -> None:
         if self.pose_diagnostic_file is not None:

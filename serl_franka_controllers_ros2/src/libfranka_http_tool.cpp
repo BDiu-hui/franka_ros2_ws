@@ -121,12 +121,18 @@ class AtomicHttpState {
       return false;
     }
     auto input = values.cbegin();
-    input = std::copy_n(input, state.pose.size(), state.pose.begin());
-    input = std::copy_n(input, state.velocity.size(), state.velocity.begin());
-    input = std::copy_n(input, state.force.size(), state.force.begin());
-    input = std::copy_n(input, state.torque.size(), state.torque.begin());
-    input = std::copy_n(input, state.q.size(), state.q.begin());
-    input = std::copy_n(input, state.dq.size(), state.dq.begin());
+    std::copy_n(input, state.pose.size(), state.pose.begin());
+    input += state.pose.size();
+    std::copy_n(input, state.velocity.size(), state.velocity.begin());
+    input += state.velocity.size();
+    std::copy_n(input, state.force.size(), state.force.begin());
+    input += state.force.size();
+    std::copy_n(input, state.torque.size(), state.torque.begin());
+    input += state.torque.size();
+    std::copy_n(input, state.q.size(), state.q.begin());
+    input += state.q.size();
+    std::copy_n(input, state.dq.size(), state.dq.begin());
+    input += state.dq.size();
     std::copy_n(input, state.jacobian.size(), state.jacobian.begin());
     return true;
   }
@@ -134,6 +140,36 @@ class AtomicHttpState {
  private:
   AtomicArraySnapshot<75> values_;
 };
+
+int test_atomic_http_state() {
+  HttpStateSnapshot expected;
+  double next = 1.0;
+  const auto fill = [&next](auto& values) {
+    for (double& value : values) {
+      value = next++;
+    }
+  };
+  fill(expected.pose);
+  fill(expected.velocity);
+  fill(expected.force);
+  fill(expected.torque);
+  fill(expected.q);
+  fill(expected.dq);
+  fill(expected.jacobian);
+
+  AtomicHttpState buffer;
+  buffer.store(expected);
+  HttpStateSnapshot actual;
+  if (!buffer.load(actual) || actual.pose != expected.pose ||
+      actual.velocity != expected.velocity || actual.force != expected.force ||
+      actual.torque != expected.torque || actual.q != expected.q || actual.dq != expected.dq ||
+      actual.jacobian != expected.jacobian) {
+    std::cerr << "Atomic HTTP state snapshot round-trip failed\n";
+    return 1;
+  }
+  std::cout << "Atomic HTTP state snapshot round-trip passed\n";
+  return 0;
+}
 
 template <size_t Size>
 std::array<double, Size> read_array_env(const char* name,
@@ -627,7 +663,7 @@ int run_impedance_server(const std::string& robot_ip) {
           return franka::MotionFinished(franka::Torques(torque_array));
         }
         return franka::Torques(torque_array);
-      });
+      }, false, franka::kMaxCutoffFrequency);
       status.store(WorkerStatus::kStopped, std::memory_order_release);
     } catch (const std::exception& exception) {
       control_error = exception.what();
@@ -726,6 +762,9 @@ int run_impedance_server(const std::string& robot_ip) {
 
 int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string(argv[1]) == "self_test_state_snapshot") {
+      return test_atomic_http_state();
+    }
     if (argc < 3) {
       std::cerr << "Usage:\n"
                 << "  " << argv[0] << " get_pose <robot_ip>\n"

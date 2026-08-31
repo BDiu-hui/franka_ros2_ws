@@ -24,6 +24,7 @@ delta，把 delta 映射到机器人 TCP 目标位姿，然后发布到
 | `simple_impedance_teleop.launch.py` | 单臂阻抗摇操，一起启动 Franka HTTP/阻抗控制栈和 Quest teleop |
 | `simple_dual_impedance_teleop.launch.py` | 双臂阻抗摇操，可一条命令启动，也可把 Franka 控制栈和 Quest teleop 分进程启动 |
 | `simple_dual_policy.launch.py` | 双臂策略推理，启动 Franka、Wuji driver 和 HTTP 策略桥，不启动 Quest/摇操/采集 |
+| `dual_libfranka_http_hands.launch.py` | 双臂纯 libfranka HTTP 控制和左右 Wuji 灵巧手 |
 | `rviz.launch.py` | Quest pose/RViz 预览和旧链路调试 |
 
 ## 构建
@@ -128,6 +129,16 @@ ros2 launch quest3_oculus_rviz simple_dual_impedance_teleop.launch.py \
 | right | `5001` | `rightGrip` |
 
 双臂 launch 同样默认 `auto_recover_after_reflex:=true`，左右臂各自监听 reflex 并自动清错。
+
+### 双臂纯 libfranka HTTP + 灵巧手
+
+```bash
+cd /home/lumos/franka_ros2_ws
+source setup_env.bash
+ros2 launch quest3_oculus_rviz dual_libfranka_http_hands.launch.py
+```
+
+默认启动左臂 `172.16.0.2:5000`、右臂 `172.16.0.3:5001`，以及左右 Wuji 灵巧手。
 
 默认话题:
 
