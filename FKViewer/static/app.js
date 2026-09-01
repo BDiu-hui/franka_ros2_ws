@@ -9,7 +9,7 @@ const MODULE_TITLES = {
 const MODULE_SUBTITLES = {
   impedance: "Franka 控制栈状态与参数操作",
   hand: "Wuji 灵巧手驱动、姿态与桥接服务",
-  inference: "EasyDP 策略服务与 checkpoint 管理",
+  inference: "固定双臂推理、位置恢复与进程日志",
   teleop: "Quest 双臂摇操、分进程启动与日志",
   unified: "Y 键切换 EasyDP 推理与 Quest 摇操控制权",
 };
@@ -55,7 +55,7 @@ function setFrameLoading(loading, text = "正在加载模块...") {
 function loadModule(module) {
   if (!MODULE_TITLES[module]) return;
   activeModule = module;
-  const hasSettings = ["teleop", "impedance", "hand", "inference"].includes(module);
+  const hasSettings = ["teleop", "impedance", "hand"].includes(module);
   const frame = $("#module-frame");
   setFrameLoading(true, `正在加载${MODULE_TITLES[module]}...`);
   setText("#app-status-message", `正在切换到${MODULE_TITLES[module]}`);
@@ -75,7 +75,7 @@ function loadModule(module) {
   for (const selector of ["#frame-settings-button", "#frame-settings-inline"]) {
     $(selector)?.classList.toggle("hidden", !hasSettings);
   }
-  const settingsLabels = { impedance: "阻抗设置", hand: "灵巧手设置", inference: "推理配置", teleop: "摇操设置" };
+  const settingsLabels = { impedance: "阻抗设置", hand: "灵巧手设置", teleop: "摇操设置" };
   setText("#frame-settings-inline", settingsLabels[module] || "设置");
 }
 
@@ -130,7 +130,7 @@ function initSidebarResize() {
 
 function openFrameSettings() {
   const child = $("#module-frame")?.contentWindow;
-  if (!["teleop", "impedance", "hand", "inference"].includes(activeModule) || !child?.openSettings) {
+  if (!["teleop", "impedance", "hand"].includes(activeModule) || !child?.openSettings) {
     notify("当前模块尚未加载完成，请稍后重试", "warn");
     return;
   }

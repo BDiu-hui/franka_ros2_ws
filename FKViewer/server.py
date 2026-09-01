@@ -43,7 +43,6 @@ DEFAULT_WUJI_ROS2_ROOT = DEFAULT_WORKSPACE / "src/wujihandros2"
 DEFAULT_WUJI_PY_ROOT = DEFAULT_WORKSPACE / "src/wujihandpy"
 DEFAULT_QUEST_ROOT = DEFAULT_WORKSPACE / "src/quest3_oculus_rviz"
 DEFAULT_UNIFIED_ROOT = DEFAULT_WORKSPACE / "src/unified_impedance_control"
-EASYDP_INFERENCE_CONFIG_REL = Path("config/task_insertion_stage2/dual_arm_predict.yaml")
 EASYDP_INFERENCE_CLIENT_REL = Path("projects/task_insertion_stage2/client/client_dual.py")
 DEFAULT_RECORDING_DIRS = [
     str(Path.home() / "quest3_recordings"),
@@ -76,7 +75,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "inference": str(DEFAULT_EASYDP),
         "unified": str(DEFAULT_UNIFIED_ROOT),
     },
-    "checkpoint_roots": ["/home/lumos/luolei/ckpt", "/home/lumos/ckpt"],
     "recording_dirs": DEFAULT_RECORDING_DIRS,
     "live_control": _env_flag("FKVIEWER_LIVE_CONTROL", False),
     "request_timeout_sec": 0.7,
@@ -250,14 +248,6 @@ def profile_file_for_target(config: dict[str, Any], target: str) -> Path:
     return Path(config["profile_file"])
 
 
-def inference_config_path(config: dict[str, Any]) -> Path:
-    root = Path(config["easydp_root"]).resolve()
-    path = (root / EASYDP_INFERENCE_CONFIG_REL).resolve()
-    if not _is_under(path, root / "config"):
-        raise ValueError("inference config must be under the EasyDP config directory")
-    return path
-
-
 def _is_under(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -328,33 +318,6 @@ def choice(selections: dict[str, Any], name: str, default: Any) -> str:
 def bool_choice(selections: dict[str, Any], name: str, default: bool = False) -> str:
     raw = str(selections.get(name, "true" if default else "false")).strip().lower()
     return "true" if raw in {"1", "true", "yes", "on"} else "false"
-
-
-def list_checkpoint_tree(roots: list[str]) -> list[dict[str, Any]]:
-    tree: list[dict[str, Any]] = []
-    for root_raw in roots:
-        root = Path(root_raw)
-        if not root.exists():
-            continue
-        root_item: dict[str, Any] = {"label": str(root), "path": str(root), "groups": []}
-        group_map: dict[str, dict[str, Any]] = {}
-        for ckpt in sorted(root.rglob("*")):
-            if not ckpt.is_file() or ckpt.suffix != ".ckpt":
-                continue
-            if not _is_under(ckpt, root):
-                continue
-            parts = ckpt.relative_to(root).parts
-            group_name = parts[0] if len(parts) > 1 else "."
-            run_name = "/".join(parts[1:-1]) if len(parts) > 2 else "."
-            group = group_map.setdefault(group_name, {"label": group_name, "runs": {}})
-            run = group["runs"].setdefault(run_name, {"label": run_name, "files": []})
-            run["files"].append({"label": ckpt.name, "path": str(ckpt)})
-        for group_name in sorted(group_map):
-            group = group_map[group_name]
-            group["runs"] = [group["runs"][key] for key in sorted(group["runs"])]
-            root_item["groups"].append(group)
-        tree.append(root_item)
-    return tree
 
 
 def extract_wuji_pose(path: Path, side: str, pose: str) -> list[float] | None:
@@ -482,6 +445,7 @@ def command_catalog(config: dict[str, Any], selections: dict[str, Any] | None = 
     workspace = Path(config["workspace"])
     easydp = Path(config["easydp_root"])
     easydp_python = str(config.get("easydp_python") or DEFAULT_EASYDP_PYTHON)
+    easydp_env = f"export PATH={shell_arg(Path(easydp_python).parent)}:$PATH"
     setup = "source setup_env.bash"
     wuji_config = config["wuji_config_file"]
     wuji_policy = config["wuji_policy_file"]
@@ -490,11 +454,6 @@ def command_catalog(config: dict[str, Any], selections: dict[str, Any] | None = 
         wuji_config = str(selections["wuji_config"])
     if selections.get("wuji_policy"):
         wuji_policy = str(selections["wuji_policy"])
-    if selections.get("easydp_config"):
-        easydp_cfg = str(selections["easydp_config"]).replace(".yaml", "")
-    checkpoint_arg = ""
-    if selections.get("checkpoint"):
-        checkpoint_arg = f" {shell_arg('resume_ckpt_path=' + str(selections['checkpoint']))}"
     teleop_profile_file = str(selections.get("profile_file") or config["profile_file"])
     teleop_profile = str(selections.get("profile") or "quest_teleop")
     teleop_launch = Path(str(selections.get("teleop_launch") or "simple_dual_profile.launch.py")).name
@@ -676,7 +635,7 @@ def command_catalog(config: dict[str, Any], selections: dict[str, Any] | None = 
         "easydp_server": {
             "label": "EasyDP Server",
             "cwd": str(easydp),
-            "cmd": f"{shell_arg(easydp_python)} main.py --config-name {shell_arg(easydp_cfg)}{checkpoint_arg}",
+            "cmd": f"{shell_arg(easydp_python)} main.py --config-name {shell_arg(easydp_cfg)}",
         },
         "easydp_client_debug": {
             "label": "EasyDP Dual Client Debug",
@@ -686,7 +645,12 @@ def command_catalog(config: dict[str, Any], selections: dict[str, Any] | None = 
         "easydp_client": {
             "label": "双臂推理客户端",
             "cwd": str(easydp),
-            "cmd": f"{shell_arg(easydp_python)} {EASYDP_INFERENCE_CLIENT_REL}{checkpoint_arg}",
+            "cmd": f"{easydp_env} && ./scripts/run_pinned.sh {EASYDP_INFERENCE_CLIENT_REL}",
+        },
+        "easydp_reset": {
+            "label": "一键恢复双臂位置",
+            "cwd": str(easydp),
+            "cmd": f"{easydp_env} && ./scripts/reset.sh",
         },
         "unified_control_stack": {
             "label": "统一阻抗与仲裁栈",
@@ -696,7 +660,7 @@ def command_catalog(config: dict[str, Any], selections: dict[str, Any] | None = 
         "unified_inference_client": {
             "label": "统一栈 EasyDP 推理客户端",
             "cwd": str(easydp),
-            "cmd": f"{shell_arg(easydp_python)} {EASYDP_INFERENCE_CLIENT_REL}{checkpoint_arg}",
+            "cmd": f"{shell_arg(easydp_python)} {EASYDP_INFERENCE_CLIENT_REL}",
         },
         "unified_quest_layer": {
             "label": "Quest 接管与录制层",
@@ -820,6 +784,7 @@ class FKViewerState:
                 "hand_selected": pgrep("wujihand_dual.launch.py|wujihand.launch.py|home.launch.py"),
                 "easydp": pgrep("main.py --config-name"),
                 "easydp_client": pgrep("client_dual.py"),
+                "easydp_reset": pgrep("move_dual_arm_to_pose.py"),
                 "recorder": pgrep("data_recorder_node"),
                 "unified_control_stack": pgrep("unified_stack.launch.py|unified_control_authority"),
                 "unified_inference_client": pgrep("client_dual.py"),
@@ -837,70 +802,6 @@ class FKViewerState:
         path = hand_config_path(self.config, raw_path)
         data = extract_wuji_hand_config(path)
         return {"ok": True, "path": str(path), **data}
-
-    def inference_config(self) -> dict[str, Any]:
-        path = inference_config_path(self.config)
-        if not path.is_file():
-            raise ValueError(f"inference config does not exist: {path}")
-        stat = path.stat()
-        return {
-            "ok": True,
-            "path": str(path),
-            "text": path.read_text(encoding="utf-8"),
-            "revision": str(stat.st_mtime_ns),
-        }
-
-    def update_inference_config(self, text: Any, expected_revision: Any = None) -> dict[str, Any]:
-        path = inference_config_path(self.config)
-        if not path.is_file():
-            raise ValueError(f"inference config does not exist: {path}")
-        if not isinstance(text, str):
-            raise ValueError("inference config text must be a string")
-        if not text.strip():
-            raise ValueError("inference config must not be empty")
-        if "\x00" in text or len(text.encode("utf-8")) > 512_000:
-            raise ValueError("inference config is invalid or too large")
-        required = ["defaults:", "_target_:", "resume_ckpt_path:", "camera_names:"]
-        missing = [key for key in required if key not in text]
-        if missing:
-            raise ValueError(f"inference config is missing required keys: {', '.join(missing)}")
-        stat = path.stat()
-        if expected_revision not in {None, ""} and int(expected_revision) != stat.st_mtime_ns:
-            raise ValueError("inference config changed on disk; reload it before saving")
-        normalized = text if text.endswith("\n") else text + "\n"
-        backup = path.with_suffix(path.suffix + ".fkviewer.bak")
-        temp = path.with_name(f".{path.name}.fkviewer-{os.getpid()}.tmp")
-        try:
-            temp.write_text(normalized, encoding="utf-8")
-            os.chmod(temp, stat.st_mode)
-            easydp_python = str(self.config.get("easydp_python") or DEFAULT_EASYDP_PYTHON)
-            try:
-                validation = subprocess.run(
-                    [
-                        easydp_python,
-                        "-c",
-                        "import sys; from omegaconf import OmegaConf; OmegaConf.load(sys.argv[1])",
-                        str(temp),
-                    ],
-                    check=False,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=8.0,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise ValueError(f"could not validate inference config: {exc}") from exc
-            if validation.returncode != 0:
-                detail = validation.stderr.strip().splitlines()[-1] if validation.stderr.strip() else "invalid YAML"
-                raise ValueError(f"inference config YAML validation failed: {detail}")
-            backup.write_bytes(path.read_bytes())
-            os.replace(temp, path)
-        finally:
-            if temp.exists():
-                temp.unlink()
-        revision = str(path.stat().st_mtime_ns)
-        self.add_event("info", "updated EasyDP inference config", {"path": str(path), "backup": str(backup)})
-        return {"ok": True, "path": str(path), "backup": str(backup), "revision": revision}
 
     def update_yaml_config(self, target: str, profiles: dict[str, Any]) -> dict[str, Any]:
         path = profile_file_for_target(self.config, target)
@@ -1081,10 +982,6 @@ class FKViewerState:
                 ],
             },
             "inference": {
-                "configs": list_safe_files(easydp_root / "config", (".yaml", ".yml"), max_depth=4),
-                "checkpoints": list_checkpoint_tree(list(self.config.get("checkpoint_roots", []))),
-                "config_file": str(easydp_root / EASYDP_INFERENCE_CONFIG_REL),
-                "config_name": "task_insertion_stage2/dual_arm_predict",
                 "client_file": str(easydp_root / EASYDP_INFERENCE_CLIENT_REL),
             },
             "unified": {
@@ -1344,12 +1241,6 @@ class FKRequestHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 json_response(self, {"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        if path == "/api/inference_config":
-            try:
-                json_response(self, self.server.state.inference_config())
-            except ValueError as exc:
-                json_response(self, {"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            return
         if path == "/api/logs":
             query = parse_qs(parsed.query)
             names = query.get("name", [])
@@ -1378,21 +1269,6 @@ class FKRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path == "/api/inference_config":
-            try:
-                payload = read_json(self)
-                json_response(
-                    self,
-                    self.server.state.update_inference_config(
-                        payload.get("text"),
-                        payload.get("revision"),
-                    ),
-                )
-            except ValueError as exc:
-                json_response(self, {"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            except Exception as exc:  # noqa: BLE001
-                json_response(self, {"ok": False, "error": repr(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
         if path == "/api/yaml":
             try:
                 payload = read_json(self)

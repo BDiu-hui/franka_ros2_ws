@@ -14,7 +14,7 @@ python3 FKViewer/server.py --host 127.0.0.1 --port 8787
 
 - 阻抗控制：读取 `src/serl_franka_controllers_ros2/config` 和 `launch`。
 - 灵巧手控制：读取 `src/wujihandros2`、`src/wujihandpy`，并列出当前 Wuji bridge YAML。
-- 推理控制：读取 `/home/lumos/luolei/easydp/config`，checkpoint 使用 root / group / run / file 多级下拉。
+- 推理控制：固定运行 EasyDP 双臂客户端，不提供配置或 checkpoint 选择。
 - 摇操控制：读取 `src/quest3_oculus_rviz/config`、`launch`、`simple_dual_split_launch.yaml`
   和 `data_recorder.yaml`，双臂/单臂/采集路径都用下拉配置。
 
@@ -50,7 +50,9 @@ python3 FKViewer/server.py --host 127.0.0.1 --port 8788
   `joint_commands` topic、service 名称和滑条范围。
 - 推理控制：固定使用 EasyDP `config/task_insertion_stage2/dual_arm_predict.yaml`，
   先启动 `policy_inference` 推理阻抗并等待左右臂 HTTP 与 Wuji 就绪，再运行
-  `projects/task_insertion_stage2/client/client_dual.py`。页面支持分步操作和一键顺序启停。
+  `scripts/run_pinned.sh projects/task_insertion_stage2/client/client_dual.py`。页面支持分步操作、
+  一键顺序启停和调用 `scripts/reset.sh` 恢复双臂位置；复位前必须停止推理客户端并等待
+  左右臂 HTTP 与 Wuji 全部就绪。
 - 摇操控制：窗口里只保留“启动机械臂”和“启动手柄”两个主按钮；右上角“设置”
   打开 `simple_dual_split_launch.yaml` 的所有 profile 参数，保存后下次启动立即生效。
   每个主按钮下方有对应停止按钮，只停止 FKViewer 自己启动的进程；机械臂和手柄日志
@@ -118,15 +120,17 @@ ros2 launch quest3_oculus_rviz simple_dual_profile.launch.py \
   profile:=policy_inference
 
 cd /home/lumos/luolei/easydp
-/home/lumos/miniconda3/envs/easydp/bin/python \
-  projects/task_insertion_stage2/client/client_dual.py
+./scripts/run_pinned.sh projects/task_insertion_stage2/client/client_dual.py
 ```
 
 第二步会等待左臂 `5000`、右臂 `5001` 和 Wuji `8765` 健康检查全部通过。
-推理配置按钮编辑完整的
-`/home/lumos/luolei/easydp/config/task_insertion_stage2/dual_arm_predict.yaml`；保存前使用
-EasyDP 环境中的 OmegaConf 校验 YAML，并生成 `.fkviewer.bak` 备份。Checkpoint 下拉默认
-服从 YAML 中的 `resume_ckpt_path`，只有手动选择文件时才作为 Hydra override 传给客户端。
+推理配置与 checkpoint 固定由 EasyDP 客户端加载，FKViewer 不提供选择或编辑入口。
+“恢复机械臂位置”执行以下固定命令，前置服务未就绪时只提示用户先启动推理阻抗：
+
+```bash
+cd /home/lumos/luolei/easydp
+./scripts/reset.sh
+```
 
 ### 摇操配置生效方案
 
@@ -181,9 +185,6 @@ FKViewer 自己启动的进程，不会杀掉你当前外部终端里的采数�
     "right": {"url": "http://127.0.0.1:5001"}
   },
   "wuji": {"url": "http://127.0.0.1:8765"},
-  "easydp": {
-    "url": "http://127.0.0.1:8090",
-    "config": "task_insertion_stage2/dual_arm_predict"
-  }
+  "easydp": {"url": "http://127.0.0.1:8090"}
 }
 ```

@@ -564,6 +564,7 @@ function processDisplayName(name) {
     impedance_policy_stack: "Policy Stack",
     impedance_selected: "SERL Launch",
     easydp_client: "双臂推理客户端",
+    easydp_reset: "一键恢复双臂位置",
     hand_selected: "灵巧手 ROS2 Driver",
     wuji_trigger_service: "Quest Bridge",
     easydp_server: "推理服务",
@@ -710,11 +711,17 @@ function syncInferenceWorkflow() {
   if (moduleName !== "inference" || !statusCache) return;
   const policyRunning = isProcessRunning("impedance_policy_stack");
   const clientRunning = isProcessRunning("easydp_client");
+  const resetRunning = isProcessRunning("easydp_reset");
   const ready = inferencePrerequisites();
   updateStateChip(
     "#inference-impedance-state",
     ready.all ? "ok" : policyRunning ? "warn" : "",
     ready.all ? "服务已就绪" : policyRunning ? "启动中" : "未运行",
+  );
+  updateStateChip(
+    "#inference-reset-state",
+    resetRunning ? "warn" : ready.all ? "ok" : "",
+    resetRunning ? "复位中" : ready.all ? "可以复位" : "等待前置服务",
   );
   updateStateChip(
     "#inference-client-state",
@@ -723,19 +730,22 @@ function syncInferenceWorkflow() {
   );
   const clientButton = document.querySelector('button[data-launch="easydp_client"]');
   if (clientButton && !clientButton.classList.contains("is-busy")) {
-    clientButton.disabled = clientRunning || !ready.all || inferenceWorkflowBusy;
-    clientButton.title = !ready.all ? "双臂 HTTP 与 Wuji 服务就绪后才能启动" : "";
+    clientButton.disabled = clientRunning || resetRunning || !ready.all || inferenceWorkflowBusy;
+    clientButton.title = resetRunning
+      ? "双臂正在复位，请等待复位完成"
+      : !ready.all ? "双臂 HTTP 与 Wuji 服务就绪后才能启动" : "";
   }
   const policyStop = document.querySelector('button[data-stop="impedance_policy_stack"]');
-  if (policyStop && !policyStop.classList.contains("is-busy") && clientRunning) {
+  if (policyStop && !policyStop.classList.contains("is-busy") && (clientRunning || resetRunning)) {
     policyStop.disabled = true;
-    policyStop.title = "请先停止双臂推理客户端";
+    policyStop.title = resetRunning ? "请等待双臂复位完成" : "请先停止双臂推理客户端";
   }
   const startAll = document.querySelector("[data-inference-start-all]");
-  if (startAll && !startAll.classList.contains("is-busy")) startAll.disabled = clientRunning || inferenceWorkflowBusy;
+  if (startAll && !startAll.classList.contains("is-busy")) startAll.disabled = clientRunning || resetRunning || inferenceWorkflowBusy;
   const stopAll = document.querySelector("[data-inference-stop-all]");
   if (stopAll && !stopAll.classList.contains("is-busy")) {
-    stopAll.disabled = inferenceWorkflowBusy || !(statusCache.managed_processes?.easydp_client?.running || statusCache.managed_processes?.impedance_policy_stack?.running);
+    stopAll.disabled = resetRunning || inferenceWorkflowBusy || !(statusCache.managed_processes?.easydp_client?.running || statusCache.managed_processes?.impedance_policy_stack?.running);
+    stopAll.title = resetRunning ? "请等待双臂复位完成" : "";
   }
 }
 
@@ -877,24 +887,13 @@ function renderHandConfig(options) {
 
 function renderInferenceConfig(options) {
   document.body.classList.add("inference-simple");
+  $("#config-panel")?.classList.add("hidden");
   $("#runtime-log-panel")?.classList.remove("hidden");
-  $("#settings-button")?.classList.remove("hidden");
+  $("#settings-button")?.classList.add("hidden");
   setText("#status-subtitle", "推理阻抗、双臂 HTTP、Wuji 与推理客户端状态");
   setText("#runtime-log-arm-title", "推理阻抗日志");
   setText("#runtime-log-hand-title", "双臂推理日志");
-  $("#config-form").innerHTML = `
-    <div class="config-section span-full inference-config-section">
-      <div class="section-title">固定推理配置</div>
-      <label class="span-all">配置文件
-        <input value="${escapeHtml(options.config_file || "--")}" readonly>
-      </label>
-      <label>Checkpoint Root<select id="ckpt-root"></select></label>
-      <label>Checkpoint Group<select id="ckpt-group"></select></label>
-      <label>Checkpoint Run<select id="ckpt-run"></select></label>
-      <label>Checkpoint File<select id="ckpt-file"></select></label>
-    </div>
-  `;
-  bindCheckpointDropdowns(options.checkpoints || []);
+  $("#config-form").innerHTML = "";
   $("#action-area").innerHTML = `
     <div class="inference-workflow">
       <div class="inference-step" data-inference-step="impedance">
@@ -920,6 +919,17 @@ function renderInferenceConfig(options) {
         <div class="step-actions">
           <button class="primary" data-launch="easydp_client">启动双臂推理</button>
           <button class="danger" data-stop="easydp_client">停止双臂推理</button>
+        </div>
+      </div>
+      <div class="inference-step" data-inference-step="reset">
+        <div class="step-number">↺</div>
+        <div class="step-content">
+          <div class="teleop-card-title">一键恢复双臂位置（可选）</div>
+          <div class="teleop-card-sub">scripts/reset.sh / 推理未运行且前置服务就绪后可执行</div>
+        </div>
+        <span class="chip" id="inference-reset-state"><span class="dot"></span>等待前置服务</span>
+        <div class="step-actions">
+          <button class="primary span-all" data-inference-reset data-launch="easydp_reset">恢复机械臂位置</button>
         </div>
       </div>
       <div class="workflow-actions">
@@ -1001,42 +1011,6 @@ function renderUnifiedConfig(options) {
   `;
 }
 
-function bindCheckpointDropdowns(tree) {
-  const root = $("#ckpt-root");
-  const group = $("#ckpt-group");
-  const run = $("#ckpt-run");
-  const file = $("#ckpt-file");
-  root.innerHTML = `<option value="-1">使用 YAML 中的 resume_ckpt_path</option>${tree.map((item, index) => `<option value="${index}">${escapeHtml(item.label)}</option>`).join("")}`;
-
-  function fillGroups() {
-    if (Number(root.value) < 0) {
-      group.innerHTML = '<option value="">由 YAML 决定</option>';
-      run.innerHTML = '<option value="">由 YAML 决定</option>';
-      file.innerHTML = '<option value="">由 YAML 决定</option>';
-      return;
-    }
-    const rootItem = tree[Number(root.value)] || { groups: [] };
-    group.innerHTML = rootItem.groups.map((item, index) => `<option value="${index}">${escapeHtml(item.label)}</option>`).join("");
-    fillRuns();
-  }
-  function fillRuns() {
-    const rootItem = tree[Number(root.value)] || { groups: [] };
-    const groupItem = rootItem.groups[Number(group.value)] || { runs: [] };
-    run.innerHTML = groupItem.runs.map((item, index) => `<option value="${index}">${escapeHtml(item.label)}</option>`).join("");
-    fillFiles();
-  }
-  function fillFiles() {
-    const rootItem = tree[Number(root.value)] || { groups: [] };
-    const groupItem = rootItem.groups[Number(group.value)] || { runs: [] };
-    const runItem = groupItem.runs[Number(run.value)] || { files: [] };
-    file.innerHTML = runItem.files.map((item) => `<option value="${escapeHtml(item.path)}">${escapeHtml(item.label)}</option>`).join("");
-  }
-  root.addEventListener("change", fillGroups);
-  group.addEventListener("change", fillRuns);
-  run.addEventListener("change", fillFiles);
-  fillGroups();
-}
-
 function moduleSelections() {
   if (moduleName === "impedance") {
     const settings = currentImpedanceSettings();
@@ -1066,12 +1040,6 @@ function moduleSelections() {
       hand_publish_rate: settings.publishRate,
       hand_filter_cutoff_freq: settings.filterCutoff,
       hand_diagnostics_rate: settings.diagnosticsRate,
-    };
-  }
-  if (moduleName === "inference") {
-    return {
-      easydp_config: optionsCache?.inference?.config_name || "task_insertion_stage2/dual_arm_predict",
-      checkpoint: selectValue("ckpt-file"),
     };
   }
   if (moduleName === "teleop") {
@@ -1109,7 +1077,7 @@ function renderStatus() {
         <span class="chip ${ready.wuji ? "ok" : "err"}"><span class="dot"></span>Wuji 服务</span>
         <strong>${ready.all ? "推理前置服务已就绪" : "请先启动推理阻抗并等待服务就绪"}</strong>
       </div>
-      ${renderProcessSubset(["impedance_policy_stack", "easydp_client"])}
+      ${renderProcessSubset(["impedance_policy_stack", "easydp_reset", "easydp_client"])}
     `;
   } else if (moduleName === "unified") {
     const authority = statusCache.unified || {};
@@ -1254,7 +1222,7 @@ async function refreshRuntimeLogs() {
   } else if (moduleName === "hand") {
     targets = ["hand_selected", "wuji_trigger_service"];
   } else if (moduleName === "inference") {
-    targets = ["impedance_policy_stack", "easydp_client"];
+    targets = ["impedance_policy_stack", "easydp_client", "easydp_reset"];
   } else if (moduleName === "unified") {
     targets = ["unified_control_stack", "unified_inference_client", "unified_quest_layer"];
   }
@@ -1272,7 +1240,7 @@ async function refreshRuntimeLogs() {
         source: `${name}:unavailable`,
       };
     };
-    if (moduleName === "impedance" || moduleName === "unified") {
+    if (["impedance", "inference", "unified"].includes(moduleName)) {
       const armEntry = logEntry(targets[0]);
       const secondaryEntries = targets.slice(1).map((name) => ({ name, ...logEntry(name) }));
       renderRuntimeLog(armPanel, armEntry.text, "arm", armEntry.source);
@@ -1336,20 +1304,6 @@ function openHandSettings() {
   $("#settings-modal").classList.remove("hidden");
 }
 
-async function openInferenceSettings() {
-  settingsCache = await api("/api/inference_config");
-  setText("#settings-title", "EasyDP 推理配置");
-  setText("#settings-path", settingsCache.path || "--");
-  $(".settings-note").textContent = "这里编辑完整的 dual_arm_predict.yaml。保存时会先生成 .fkviewer.bak 备份；已经运行的推理客户端不会自动重载，需要停止后重新启动。";
-  $("#settings-form").innerHTML = `
-    <section class="settings-section inference-editor-section">
-      <h3>Hydra YAML</h3>
-      <textarea id="inference-config-editor" class="yaml-editor" spellcheck="false" aria-label="EasyDP 推理 YAML 配置">${escapeHtml(settingsCache.text || "")}</textarea>
-    </section>
-  `;
-  $("#settings-modal").classList.remove("hidden");
-}
-
 async function openSettings() {
   if (moduleName === "impedance") {
     await openImpedanceSettings();
@@ -1357,10 +1311,6 @@ async function openSettings() {
   }
   if (moduleName === "hand") {
     openHandSettings();
-    return;
-  }
-  if (moduleName === "inference") {
-    await openInferenceSettings();
     return;
   }
   await openTeleopSettings();
@@ -1400,17 +1350,6 @@ async function saveSettings() {
     toast(`阻抗设置已保存: ${result.changed} 项，重启对应程序后生效`);
     closeSettings();
     await refresh();
-    return;
-  }
-  if (moduleName === "inference") {
-    const editor = $("#inference-config-editor");
-    const result = await api("/api/inference_config", {
-      method: "POST",
-      body: JSON.stringify({ text: editor?.value || "", revision: settingsCache?.revision }),
-    });
-    settingsCache.revision = result.revision;
-    toast("推理配置已保存，重启推理客户端后生效");
-    closeSettings();
     return;
   }
   const profiles = {};
@@ -1826,6 +1765,22 @@ document.addEventListener("click", async (event) => {
   }
   if (button.matches("[data-inference-stop-all]")) {
     await stopInferenceWorkflow(button);
+    return;
+  }
+  if (button.matches("[data-inference-reset]")) {
+    if (isProcessRunning("easydp_client")) {
+      const message = "请先停止双臂推理客户端，再恢复机械臂位置";
+      setOperation("warning", "无法复位", message);
+      toast(message, "warn");
+      return;
+    }
+    if (!inferencePrerequisites().all) {
+      const message = "请先启动推理阻抗，并等待左臂 HTTP、右臂 HTTP 与 Wuji 服务全部就绪";
+      setOperation("warning", "前置服务未就绪", message);
+      toast(message, "warn");
+      return;
+    }
+    await postAction({ action: "launch", name: "easydp_reset", selections: {} }, button);
     return;
   }
   if (button.dataset.launch) {
